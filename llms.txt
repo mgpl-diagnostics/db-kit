@@ -1,0 +1,32 @@
+# @mgpl-diagnostics/db-kit
+
+> The MGPL Diagnostics backend's internal data API (Node.js ≥ 20), with no HTTP endpoints of its own. One domain model on MongoDB (Mongoose) or PostgreSQL (Sequelize) behind the same repository interface, UUID ids and integer paise. Workflows are ACID on both databases. Books are Tally-style double-entry (28 groups, ledgers, vouchers, automatic posting from invoices and payments, trial balance / P&L / balance sheet / GST). Includes a Redis cache toolkit and Fastify / Express adapters.
+
+Key facts for agents:
+- `const db = await createDb({ backend: "pg" | "mongo", pg: { url } | mongo: { uri }, redis? })` → `{ repos, rawRepos, cache, close }`.
+- Workflows (all transactional + audited): seedOrganization, registerPatient, createBooking, saveResults/transitionReport, issueInvoice, recordPayment, cancelInvoice; accounting: seedChartOfAccounts, postVoucher, cancelVoucher.
+- Reports: trialBalance, ledgerStatement, cashBook, dayBook, profitAndLoss, balanceSheet, outstandingReceivables, gstSummary.
+- Errors carry statusCode: NotFoundError 404, ConflictError 409, ValidationError 400, UnbalancedVoucherError 422; MongoDB without a replica set → TransactionsUnsupportedError.
+- Change a repository in both src/mongo and src/pg; `npm test` runs one contract suite on real MongoDB and PostgreSQL.
+- src/graphql is moving to the backend repo: see docs/MOVE-GRAPHQL-TO-BACKEND.md.
+
+## Docs
+
+- [README](README.md): overview, workflows, books, ACID, cache, entry points
+- [AGENTS.md](AGENTS.md): map and rules
+- [docs/MOVE-GRAPHQL-TO-BACKEND.md](docs/MOVE-GRAPHQL-TO-BACKEND.md): handoff for the GraphQL move
+- [llms-full.txt](llms-full.txt): every doc and source file in one document
+
+## Source
+
+- [src/core/ports.ts](src/core/ports.ts): repository interface, errors
+- [src/core/services.ts](src/core/services.ts): workflows
+- [src/core/accounting.ts](src/core/accounting.ts): chart of accounts, vouchers, posting
+- [src/core/reports.ts](src/core/reports.ts): financial reports
+- [src/mongo/index.ts](src/mongo/index.ts) · [src/pg/index.ts](src/pg/index.ts): backends
+- [src/cache/cache.ts](src/cache/cache.ts): cache techniques
+
+## Optional
+
+- [auth-kit](https://github.com/mgpl-diagnostics/auth-kit)
+- [catalog-kit](https://github.com/mgpl-diagnostics/catalog-kit)
