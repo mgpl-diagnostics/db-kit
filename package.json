@@ -1,0 +1,117 @@
+{
+  "name": "@mgpl-diagnostics/db-kit",
+  "version": "1.0.0",
+  "description": "MGPL Diagnostics data layer: patients, bookings, samples, reports, invoices, payments, users, roles and audit \u2014 on MongoDB (Mongoose) or PostgreSQL (Sequelize) behind one repository API, with Tally-style double-entry accounting, a GraphQL module, a Redis cache toolkit, sessions, RBAC, and Fastify / Express adapters.",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": "github:mgpl-diagnostics/db-kit",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mongo": {
+      "types": "./dist/mongo.d.ts",
+      "import": "./dist/mongo.js"
+    },
+    "./pg": {
+      "types": "./dist/pg.d.ts",
+      "import": "./dist/pg.js"
+    },
+    "./cache": {
+      "types": "./dist/cache.d.ts",
+      "import": "./dist/cache.js"
+    },
+    "./fastify": {
+      "types": "./dist/fastify.d.ts",
+      "import": "./dist/fastify.js"
+    },
+    "./express": {
+      "types": "./dist/express.d.ts",
+      "import": "./dist/express.js"
+    },
+    "./graphql": {
+      "types": "./dist/graphql.d.ts",
+      "import": "./dist/graphql.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "AGENTS.md",
+    "llms.txt",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx scripts/test.ts",
+    "prepare": "tsup"
+  },
+  "peerDependencies": {
+    "@graphql-tools/schema": ">=10",
+    "fastify": ">=4",
+    "graphql": ">=16.10",
+    "ioredis": ">=5",
+    "mongoose": ">=8",
+    "pg": ">=8",
+    "pg-hstore": ">=2",
+    "sequelize": ">=6"
+  },
+  "peerDependenciesMeta": {
+    "@graphql-tools/schema": {
+      "optional": true
+    },
+    "fastify": {
+      "optional": true
+    },
+    "graphql": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    },
+    "mongoose": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "pg-hstore": {
+      "optional": true
+    },
+    "sequelize": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@graphql-tools/schema": "^10.1.4",
+    "@types/node": "^22.20.5",
+    "dataloader": "^2.2.3",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "fastify": "^5.12.7",
+    "graphql": "^16.14.2",
+    "graphql-yoga": "^5.24.4",
+    "ioredis": "^5.11.1",
+    "ioredis-mock": "^8.13.1",
+    "mongodb-memory-server": "^11.3.0",
+    "mongoose": "^9.11.2",
+    "pg": "^8.23.1",
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.8",
+    "tsup": "^8.5.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
