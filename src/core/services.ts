@@ -16,7 +16,7 @@ import type {
 
 export interface SeedInput {
   org: Pick<Organization, "name" | "code"> & Partial<Omit<Organization, "id" | "createdAt" | "updatedAt">>;
-  branch: Pick<Branch, "code" | "name"> & Partial<Pick<Branch, "kind" | "phone" | "gstin" | "address">>;
+  branch: Pick<Branch, "code" | "name"> & Partial<Pick<Branch, "kind" | "phone" | "gstin" | "stateCode" | "address">>;
   /** Hash the password with @mgpl-diagnostics/auth-kit (hashPassword) before calling. */
   owner: { name: string; email: string; passwordHash: string; phone?: string };
   /** Roles to create, e.g. SYSTEM_ROLES from auth-kit. The owner gets "owner". */
@@ -174,8 +174,8 @@ export function invoiceBalance(inv: Pick<Invoice, "totalPaise" | "creditedPaise"
   const credited = inv.creditedPaise ?? 0;
   const net = inv.totalPaise - credited;
   const duePaise = Math.max(0, net - paidPaise);
-  if (credited > 0 && net <= 0 && paidPaise <= 0) return { duePaise, status: "credited" };
   if (refund && paidPaise === 0) return { duePaise, status: "refunded" };
+  if (credited > 0 && net <= 0 && paidPaise <= 0) return { duePaise, status: "credited" };
   return { duePaise, status: statusFor(net, paidPaise) };
 }
 

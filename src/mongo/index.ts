@@ -105,7 +105,7 @@ function repo<T extends { id: Id }>(model: Model<any>, session?: ClientSession):
       return (await model.find({ _id: { $in: [...ids] } }, null, s).lean()).map((d: any) => toEntity<T>(d));
     },
     async update(id, patch) {
-      return toEntity<T>(await model.findByIdAndUpdate(id, { $set: clean(patch as any) }, { new: true, runValidators: true, ...s }).lean());
+      return toEntity<T>(await model.findByIdAndUpdate(id, { $set: clean(patch as any) }, { returnDocument: "after", runValidators: true, ...s }).lean());
     },
     async delete(id) {
       return (await model.deleteOne({ _id: id }, s)).deletedCount === 1;
@@ -211,7 +211,7 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
     };
     const counters: CounterRepo = {
       async next(key) {
-        const doc: any = await models.Counter.findOneAndUpdate({ _id: key }, { $inc: { seq: 1 } }, { upsert: true, new: true, ...s }).lean();
+        const doc: any = await models.Counter.findOneAndUpdate({ _id: key }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: "after", ...s }).lean();
         return doc.seq;
       },
       async peek(key) {

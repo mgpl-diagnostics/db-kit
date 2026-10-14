@@ -1,6 +1,6 @@
 {
   "name": "@mgpl-diagnostics/db-kit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MGPL Diagnostics data layer: patients, bookings, samples, reports, invoices, payments, users, roles and audit — on MongoDB (Mongoose) or PostgreSQL (Sequelize) behind one repository API, with Tally-style double-entry accounting, storage for finance-kit (customers, partners, settlements, cash, bank, lock dates, tax rules, credit notes), a GraphQL module, a Redis cache toolkit, sessions, RBAC, and Fastify / Express adapters.",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
