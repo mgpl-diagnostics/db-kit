@@ -1,5 +1,5 @@
 import { financialYear } from "./numbering";
-import { NotFoundError, ValidationError, type Repositories } from "./ports";
+import { NotFoundError, PeriodLockedError, ValidationError, type PostingHook, type Repositories } from "./ports";
 import type {
   AccountGroup, AccountNature, Id, Invoice, Ledger, Payment, PaymentMode, Voucher, VoucherEntry, VoucherType,
 } from "./types";
@@ -109,7 +109,7 @@ export async function seedChartOfAccounts(repos: Repositories, orgId: Id): Promi
 // ------------------------------------------------------------------ vouchers
 
 export const VOUCHER_PREFIX: Record<VoucherType, string> = {
-  sales: "SAL", receipt: "RCT", payment: "PMT", journal: "JRN", contra: "CTR", credit_note: "CRN", debit_note: "DBN", purchase: "PUR",
+  sales: "SAL", receipt: "RCT", payment: "PMT", journal: "JRN", contra: "CTR", credit_note: "CRN", debit_note: "DBN", purchase: "PUR", closing: "CLS",
 };
 
 export const voucherCounterKey = (orgId: Id, type: VoucherType, fy: string) => `voucher:${orgId}:${type}:${fy}`;
@@ -148,12 +148,25 @@ export function assertBalanced(entries: VoucherEntry[]): void {
   if (dr !== cr) throw new UnbalancedVoucherError(dr, cr);
 }
 
-/** Numbers, stores and posts a voucher atomically (voucher + its ledger entries). */
+// ------------------------------------------------------------------ lock dates
+
+/**
+ * Inside a transaction: throws PeriodLockedError when `date` is on or before the organisation's or
+ * the branch's lock date. Holds both lock rows until commit, so a concurrent lock change cannot slip
+ * in between this check and the commit. postVoucher and cancelVoucher call it.
+ */
+export async function assertPeriodOpen(tx: Repositories, orgId: Id, branchId: Id, date: Date): Promise<void> {
+  for (const lock of await tx.periodLocks.hold(orgId, ["org", branchId], "share"))
+    if (lock.lockedUpTo && date.getTime() <= lock.lockedUpTo.getTime()) throw new PeriodLockedError(date, lock.lockedUpTo, lock.scope);
+}
+
+/** Numbers, stores and posts a voucher atomically (voucher + its ledger entries). Refused in a locked period. */
 export async function postVoucher(repos: Repositories, input: VoucherInput, actorId?: Id): Promise<Voucher> {
   const entries = input.entries.filter((e) => e.debitPaise > 0 || e.creditPaise > 0);
   assertBalanced(entries);
   const date = input.date ?? new Date();
   return repos.transaction(async (tx) => {
+    await assertPeriodOpen(tx, input.orgId, input.branchId, date);
     const ids = [...new Set(entries.map((e) => e.ledgerId))];
     for (const id of ids) if (!(await tx.ledgers.get(id))) throw new NotFoundError("Ledger", id);
     const fy = financialYear(date);
@@ -171,12 +184,13 @@ export async function postVoucher(repos: Repositories, input: VoucherInput, acto
   });
 }
 
-/** Cancels a voucher the Tally way: the number stays, the postings are removed. */
+/** Cancels a voucher the Tally way: the number stays, the postings are removed. Refused in a locked period. */
 export async function cancelVoucher(repos: Repositories, voucherId: Id, actorId?: Id): Promise<Voucher> {
   return repos.transaction(async (tx) => {
     const v = await tx.vouchers.get(voucherId);
     if (!v) throw new NotFoundError("Voucher", voucherId);
     if (v.status === "cancelled") return v;
+    await assertPeriodOpen(tx, v.orgId, v.branchId, v.date);
     await tx.ledgerEntries.deleteByVoucher(voucherId);
     const out = (await tx.vouchers.update(voucherId, { status: "cancelled" }))!;
     await tx.audit.log({ orgId: v.orgId, branchId: v.branchId, userId: actorId ?? null, action: "voucher.cancel", entity: "voucher", entityId: voucherId });
@@ -257,3 +271,16 @@ export async function unpostInvoice(tx: Repositories, invoiceId: Id, actorId?: I
   for (const v of await tx.vouchers.find({ invoiceId, type: "sales", status: "posted" } as any)) await cancelVoucher(tx, v.id, actorId);
 }
 
+
+/** Posting with this package's accounting: what the billing workflows do unless `repos.posting` is set. */
+export const defaultPostingHook: PostingHook = {
+  async invoiceIssued(tx, invoice, actorId) {
+    await postInvoice(tx, invoice, actorId);
+  },
+  async paymentRecorded(tx, payment, invoiceNo, actorId) {
+    await postPayment(tx, payment, invoiceNo, actorId);
+  },
+  async invoiceCancelled(tx, invoiceId, actorId) {
+    await unpostInvoice(tx, invoiceId, actorId);
+  },
+};

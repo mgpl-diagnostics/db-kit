@@ -1,4 +1,4 @@
-import { postInvoice, postPayment, unpostInvoice } from "./accounting";
+import { defaultPostingHook } from "./accounting";
 import { computeTotals, type ItemInput } from "./money";
 import { counterKeys, dayKey, financialYear, formatBookingNo, formatInvoiceNo, formatSampleBarcode, formatUhid } from "./numbering";
 import { ConflictError, NotFoundError, ValidationError, type Repositories } from "./ports";
@@ -156,6 +156,10 @@ export interface IssueInvoiceInput {
   branchId: Id;
   patientId: Id;
   bookingId?: Id | null;
+  /** B2B customer billed; finance-kit's issueCustomerInvoice fills these three. */
+  customerId?: Id | null;
+  placeOfSupply?: string | null;
+  buyerGstin?: string | null;
   items: ItemInput[];
   billDiscountPaise?: Paise;
   /** Payments taken at the counter together with the invoice. */
@@ -164,6 +168,18 @@ export interface IssueInvoiceInput {
 }
 
 const statusFor = (total: Paise, paid: Paise): InvoiceStatus => (paid >= total ? "paid" : paid > 0 ? "partially_paid" : "issued");
+
+/** Amount due and status after a payment, refund or credit note. Credit notes reduce what is owed. */
+export function invoiceBalance(inv: Pick<Invoice, "totalPaise" | "creditedPaise">, paidPaise: Paise, refund = false): { duePaise: Paise; status: InvoiceStatus } {
+  const credited = inv.creditedPaise ?? 0;
+  const net = inv.totalPaise - credited;
+  const duePaise = Math.max(0, net - paidPaise);
+  if (credited > 0 && net <= 0 && paidPaise <= 0) return { duePaise, status: "credited" };
+  if (refund && paidPaise === 0) return { duePaise, status: "refunded" };
+  return { duePaise, status: statusFor(net, paidPaise) };
+}
+
+const postingOf = (tx: Repositories) => tx.posting ?? defaultPostingHook;
 
 /** Numbers the invoice in the branch's financial-year series, stores it, links the booking, takes payments. */
 export async function issueInvoice(repos: Repositories, input: IssueInvoiceInput, actorId?: Id): Promise<{ invoice: Invoice; payments: Payment[] }> {
@@ -180,8 +196,9 @@ export async function issueInvoice(repos: Repositories, input: IssueInvoiceInput
     const seq = await tx.counters.next(counterKeys.invoice(org.id, branch.code, fy));
     const invoice = await tx.invoices.create({
       orgId: org.id, branchId: branch.id, patientId: input.patientId, bookingId: input.bookingId ?? null,
+      customerId: input.customerId ?? null, placeOfSupply: input.placeOfSupply ?? null, buyerGstin: input.buyerGstin ?? null,
       invoiceNo: formatInvoiceNo(org.code, branch.code, fy, seq), items, ...totals,
-      paidPaise: paid, duePaise: totals.totalPaise - paid, status: statusFor(totals.totalPaise, paid),
+      paidPaise: paid, creditedPaise: 0, duePaise: totals.totalPaise - paid, status: statusFor(totals.totalPaise, paid),
       issuedAt: when, createdBy: actorId ?? null, cancelReason: null,
     });
     const payments: Payment[] = [];
@@ -191,9 +208,10 @@ export async function issueInvoice(repos: Repositories, input: IssueInvoiceInput
         mode: p.mode, reference: p.reference, receivedBy: actorId ?? null, receivedAt: when,
       }));
     if (input.bookingId) await tx.bookings.update(input.bookingId, { invoiceId: invoice.id });
-    // books: sales voucher, then a receipt per payment (skipped when no chart of accounts)
-    await postInvoice(tx, invoice, actorId);
-    for (const p of payments) await postPayment(tx, p, invoice.invoiceNo, actorId);
+    // books: sales voucher, then a receipt per payment (the default hook skips them without a chart of accounts)
+    const posting = postingOf(tx);
+    await posting.invoiceIssued(tx, invoice, actorId);
+    for (const p of payments) await posting.paymentRecorded(tx, p, invoice.invoiceNo, actorId);
     await tx.audit.log({ orgId: org.id, branchId: branch.id, userId: actorId ?? null, action: "invoice.issue", entity: "invoice", entityId: invoice.id, data: { invoiceNo: invoice.invoiceNo, totalPaise: invoice.totalPaise } });
     return { invoice, payments };
   });
@@ -218,9 +236,8 @@ export async function recordPayment(
       mode: input.mode, reference: input.reference, receivedBy: actorId ?? null, receivedAt: new Date(),
     });
     const paid = inv.paidPaise + (kind === "payment" ? input.amountPaise : -input.amountPaise);
-    const status: InvoiceStatus = kind === "refund" && paid === 0 ? "refunded" : statusFor(inv.totalPaise, paid);
-    const invoice = (await tx.invoices.update(inv.id, { paidPaise: paid, duePaise: inv.totalPaise - paid, status }))!;
-    await postPayment(tx, payment, inv.invoiceNo, actorId);
+    const invoice = (await tx.invoices.update(inv.id, { paidPaise: paid, ...invoiceBalance(inv, paid, kind === "refund") }))!;
+    await postingOf(tx).paymentRecorded(tx, payment, inv.invoiceNo, actorId);
     await tx.audit.log({ orgId: inv.orgId, branchId: inv.branchId, userId: actorId ?? null, action: `payment.${kind}`, entity: "invoice", entityId: inv.id, data: { amountPaise: input.amountPaise, mode: input.mode } });
     return { invoice, payment };
   });
@@ -235,7 +252,7 @@ export async function cancelInvoice(repos: Repositories, invoiceId: Id, reason: 
     if (inv.paidPaise > 0) throw new ConflictError("Refund the payments before cancelling");
     const invoice = (await tx.invoices.update(invoiceId, { status: "cancelled", cancelReason: reason, duePaise: 0 }))!;
     if (inv.bookingId) await tx.bookings.update(inv.bookingId, { invoiceId: null });
-    await unpostInvoice(tx, invoiceId, actorId);
+    await postingOf(tx).invoiceCancelled(tx, invoiceId, actorId);
     await tx.audit.log({ orgId: inv.orgId, branchId: inv.branchId, userId: actorId ?? null, action: "invoice.cancel", entity: "invoice", entityId: invoiceId, data: { reason } });
     return invoice;
   });

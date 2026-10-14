@@ -105,10 +105,10 @@ export interface GroupLine {
   ledgers: { ledger: Ledger; amountPaise: Paise }[];
 }
 
-/** Income and expenses for a period, by primary group; gross and net profit. */
+/** Income and expenses for a period, by primary group; gross and net profit. Year-end closing vouchers are left out. */
 export async function profitAndLoss(repos: Repositories, q: Scope & { from: Date; to: Date }) {
   const { ledgers, gById, primary } = await chart(repos, q.orgId);
-  const totals = new Map((await repos.ledgerEntries.totals({ orgId: q.orgId, branchId: q.branchId, from: q.from, to: q.to })).map((t) => [t.ledgerId, t]));
+  const totals = new Map((await repos.ledgerEntries.totals({ orgId: q.orgId, branchId: q.branchId, from: q.from, to: q.to, excludeVoucherTypes: ["closing"] })).map((t) => [t.ledgerId, t]));
   const lines = new Map<Id, GroupLine>();
   for (const l of ledgers) {
     const p = primary(gById.get(l.groupId)!);
@@ -194,7 +194,7 @@ export async function outstandingReceivables(repos: Repositories, q: Scope & { a
 export async function gstSummary(repos: Repositories, q: Scope & { from: Date; to: Date }) {
   const keyed = new Map<string, Ledger>();
   for (const l of await repos.ledgers.find({ orgId: q.orgId })) if (l.systemKey) keyed.set(l.systemKey, l);
-  const totals = new Map((await repos.ledgerEntries.totals({ orgId: q.orgId, branchId: q.branchId, from: q.from, to: q.to })).map((t) => [t.ledgerId, t]));
+  const totals = new Map((await repos.ledgerEntries.totals({ orgId: q.orgId, branchId: q.branchId, from: q.from, to: q.to, excludeVoucherTypes: ["closing"] })).map((t) => [t.ledgerId, t]));
   const credit = (key: string) => {
     const l = keyed.get(key);
     const t = l && totals.get(l.id);

@@ -6,7 +6,7 @@
 One domain model on **MongoDB** or **PostgreSQL**, ACID workflows, Tally-style double-entry books
 and a Redis cache toolkit, as an internal API the backend calls. It serves no endpoints of its own.
 
-![checks](https://img.shields.io/badge/checks-134-14264A) ![backends](https://img.shields.io/badge/MongoDB%20%7C%20PostgreSQL-same%20API-C2410C) ![ACID](https://img.shields.io/badge/ACID-both%20databases-E9A23B)
+![checks](https://img.shields.io/badge/checks-194-14264A) ![backends](https://img.shields.io/badge/MongoDB%20%7C%20PostgreSQL-same%20API-C2410C) ![ACID](https://img.shields.io/badge/ACID-both%20databases-E9A23B)
 
 </div>
 
@@ -52,8 +52,9 @@ Tables and collections, with their indexes, are created on start (`sync: false` 
 | Organisation | organisations, branches (lab / collection centre) |
 | Access | users (roles per branch), roles, audit log. Passwords and sessions live in **auth-kit** |
 | Lab | patients (UHID), referring doctors, bookings, samples (barcodes), reports |
-| Billing | invoices (GST, discounts, round-off), payments and refunds |
-| Books | account groups, ledgers, vouchers, ledger entries |
+| Billing | invoices (GST, discounts, round-off, B2B customer, place of supply), payments and refunds, credit notes |
+| Books | account groups, ledgers, vouchers, ledger entries, lock dates |
+| Finance | B2B customers, collection-centre partners and agreements, monthly settlements, day-end cash closings, bank statements and lines, GST tax rules. Rules live in [finance-kit](https://github.com/mgpl-diagnostics/finance-kit); see [docs/FINANCE-STORAGE.md](docs/FINANCE-STORAGE.md) |
 
 Ids are **UUID strings on both databases**, so data and code move between them unchanged. Money is
 **integer paise** everywhere.
@@ -77,8 +78,9 @@ Each workflow runs in a transaction and writes an audit entry:
 | | |
 | --- | --- |
 | Chart of accounts | Tally's 28 groups (`TALLY_GROUPS`) and lab ledgers (`DEFAULT_LEDGERS`: Cash, UPI, Card, Bank, Patient Receivables, Lab Test Income, Output CGST/SGST/IGST, Discount, Round Off…) via `seedChartOfAccounts` |
-| Vouchers | Sales, Receipt, Payment, Journal, Contra, Credit/Debit Note, Purchase. Numbered per type per financial year; debits must equal credits (`assertBalanced`) |
-| Automatic posting | invoice → Dr Receivables / Dr Discount / Cr Income / Cr GST / ± Round Off; payment → Dr Cash·UPI·Card / Cr Receivables |
+| Vouchers | Sales, Receipt, Payment, Journal, Contra, Credit/Debit Note, Purchase, Closing (year end). Numbered per type per financial year; debits must equal credits (`assertBalanced`) |
+| Lock dates | per organisation or branch: no voucher on or before the lock date may be posted or cancelled (`PeriodLockedError`, 409). Checked inside the posting transaction, safe under concurrency |
+| Automatic posting | invoice → Dr Receivables / Dr Discount / Cr Income / Cr GST / ± Round Off; payment → Dr Cash·UPI·Card / Cr Receivables. Replaceable through a `PostingHook` (`createDb({ posting })`) |
 | Reports | `trialBalance` · `ledgerStatement` (running balance) · `cashBook` · `dayBook` · `profitAndLoss` (gross and net) · `balanceSheet` · `outstandingReceivables` (ageing) · `gstSummary` |
 
 ### ACID on both databases
@@ -123,6 +125,7 @@ Errors carry `statusCode`:
 | --- | --- |
 | `NotFoundError` | 404 |
 | `ConflictError` | 409 |
+| `PeriodLockedError` (a `ConflictError`) | 409 |
 | `ValidationError` | 400 |
 | `UnbalancedVoucherError` | 422 |
 
@@ -142,12 +145,13 @@ Peer dependencies are all optional: install only the ones you use (`mongoose`, o
 ## Tests
 
 ```bash
-npm test   # 134 checks
+npm test   # 194 checks
 ```
 
 The suite starts a real MongoDB (single-node replica set) and a real PostgreSQL in-process, then runs
-the same contract suite on both. It covers seeding, numbering, workflows, ACID, the books, the cache
-techniques and the adapters. Set `REDIS_URL` to run the cache checks against real Redis instead of
+the same contract suite on both. It covers seeding, numbering, workflows, ACID, the books, the finance
+storage (unique keys, row locks, lock dates under concurrency, the posting hook), the cache techniques
+and the adapters. Set `REDIS_URL` to run the cache checks against real Redis instead of
 `ioredis-mock`.
 
 ## Family

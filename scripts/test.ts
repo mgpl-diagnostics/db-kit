@@ -7,12 +7,14 @@ import Fastify from "fastify";
 import RedisMock from "ioredis-mock";
 import { MongoMemoryReplSet, MongoMemoryServer } from "mongodb-memory-server";
 import {
-  balanceSheet, cancelInvoice, ConflictError, createBooking, createDb, dayBook, gstSummary, issueInvoice, ledgerBalance,
-  ledgerStatement, NotFoundError, outstandingReceivables, postVoucher, profitAndLoss, recordPayment, registerPatient,
-  seedChartOfAccounts, seedOrganization, transitionReport, trialBalance, UnbalancedVoucherError, type Db,
+  balanceSheet, cancelInvoice, cancelVoucher, ConflictError, createBooking, createDb, dayBook, defaultPostingHook, gstSummary, invoiceBalance,
+  issueInvoice, ledgerBalance, ledgerStatement, NotFoundError, outstandingReceivables, PeriodLockedError, postVoucher, profitAndLoss,
+  recordPayment, registerPatient, seedChartOfAccounts, seedOrganization, transitionReport, trialBalance, UnbalancedVoucherError,
+  type Branch, type Db, type Organization, type PostingHook, type Repositories,
 } from "../src/index";
 import { createCache, fixedWindowLimiter, slidingWindowLimiter, withCache, withLock } from "../src/cache/index";
 import { createMongoRepositories, TransactionsUnsupportedError } from "../src/mongo/index";
+import { createPgRepositories } from "../src/pg/index";
 import { mgplDb } from "../src/adapters/fastify";
 import { attachDb, dbErrorHandler } from "../src/adapters/express";
 import { graphqlSuite } from "./graphql-suite";
@@ -160,6 +162,164 @@ async function contract(db: Db) {
   return { org, branch };
 }
 
+// ------------------------------------------------------------------ finance storage (both backends)
+
+/** Storage used by finance-kit: B2B customers, partners, settlements, cash, bank, lock dates, tax rules, credit notes. */
+async function financeStorage(db: Db, org: Organization, branch: Branch, withPosting: (hook: PostingHook) => Promise<Repositories>) {
+  const r = db.rawRepos;
+  const tag = `[${db.backend}]`;
+  const orgId = org.id;
+  console.log(`\n${tag} finance storage`);
+  const ledgerIn = async (group: string, name: string) => {
+    const g = (await r.accountGroups.findOne({ orgId, name: group }))!;
+    return r.ledgers.create({ orgId, name, groupId: g.id, openingPaise: 0, systemKey: null, active: true });
+  };
+
+  const b2 = await r.branches.create({ orgId, code: "BLS01", name: "Bilaspur CC", kind: "collection_center", stateCode: "22", active: true });
+  ok((await r.branches.get(b2.id))?.stateCode === "22", `${tag} branch stateCode`);
+
+  // customers: unique code, own ledger, row lock
+  const custLedger = await ledgerIn("Sundry Debtors", "City Hospital");
+  const cust = await r.customers.create({ orgId, code: "CITYHOSP", name: "City Hospital", kind: "hospital", gstin: "22AABCC1234D1Z5", stateCode: "22", creditLimitPaise: 5000000, creditDays: 30, ledgerId: custLedger.id, active: true });
+  ok(cust.code === "CITYHOSP" && cust.creditLimitPaise === 5000000 && cust.ledgerId === custLedger.id, `${tag} customer stored with its own ledger`);
+  await rejects(r.customers.create({ orgId, code: "CITYHOSP", name: "Dup", kind: "other", creditLimitPaise: null, creditDays: 0, ledgerId: custLedger.id, active: true }), Error, `${tag} duplicate customer code rejected`);
+  const open = await r.customers.create({ orgId, code: "WALKCORP", name: "Walk Corp", kind: "corporate", creditLimitPaise: null, creditDays: 15, ledgerId: (await ledgerIn("Sundry Debtors", "Walk Corp")).id, active: true });
+  ok(open.creditLimitPaise === null, `${tag} customer without a credit limit keeps null`);
+  let held!: () => void;
+  const holding = new Promise<void>((res) => (held = res));
+  const t1 = r.transaction(async (tx) => { await tx.customers.getForUpdate(cust.id); held(); await sleep(300); });
+  await holding;
+  const waitStart = Date.now();
+  await r.transaction(async (tx) => tx.customers.getForUpdate(cust.id));
+  const waited = Date.now() - waitStart;
+  await t1;
+  ok(waited >= 200, `${tag} customer lock: a second transaction waited ${waited} ms`);
+
+  // B2B invoice fields, GST line fields, listByDate
+  const patient = (await r.patients.find({ orgId }))[0]!;
+  const { invoice: b2b } = await issueInvoice(r, {
+    orgId, branchId: branch.id, patientId: patient.id, customerId: cust.id, placeOfSupply: "22", buyerGstin: cust.gstin,
+    items: [{ code: "CBC", name: "CBC", ratePaise: 39900, hsnSac: "999316", taxability: "exempt" }, { code: "SYR", name: "Syringe", category: "consumable", ratePaise: 1000, taxPercent: 12, hsnSac: "9018", taxability: "taxable" }],
+  });
+  const got = (await r.invoices.get(b2b.id))!;
+  ok(got.customerId === cust.id && got.placeOfSupply === "22" && got.buyerGstin === "22AABCC1234D1Z5" && got.creditedPaise === 0, `${tag} invoice: customer, place of supply, buyer GSTIN, creditedPaise 0`);
+  ok(got.items[0]?.hsnSac === "999316" && got.items[0]?.taxability === "exempt" && got.items[1]?.taxability === "taxable", `${tag} invoice lines keep SAC/HSN and taxability`);
+  const day = 86400000;
+  const listed = await r.invoices.listByDate({ orgId, from: new Date(Date.now() - day), to: new Date(Date.now() + day) });
+  const byCust = await r.invoices.listByDate({ orgId, customerId: cust.id });
+  ok(listed.length >= 2 && listed.every((i) => i.status !== "cancelled") && byCust.length === 1 && byCust[0]!.id === b2b.id, `${tag} invoices.listByDate (by date and customer; cancelled left out)`);
+  ok((await r.invoices.listByDate({ orgId, includeCancelled: true })).some((i) => i.status === "cancelled"), `${tag} invoices.listByDate includeCancelled`);
+  const { duePaise, status } = invoiceBalance({ totalPaise: 10000, creditedPaise: 10000 }, 0);
+  const part = invoiceBalance({ totalPaise: 10000, creditedPaise: 4000 }, 6000);
+  ok(duePaise === 0 && status === "credited" && part.duePaise === 0 && part.status === "paid", `${tag} invoiceBalance: credit notes reduce what is due`);
+
+  // tax rules
+  const rule = await r.taxRules.create({ orgId, code: null, category: "medicine", hsnSac: "3004", taxability: "taxable", ratePercent: 0.25, effectiveFrom: new Date("2026-04-01T00:00:00+05:30"), effectiveTo: null });
+  const ruleBack = (await r.taxRules.find({ orgId, category: "medicine" }))[0]!;
+  ok(ruleBack.id === rule.id && ruleBack.ratePercent === 0.25 && typeof ruleBack.ratePercent === "number" && ruleBack.code === null && ruleBack.effectiveFrom instanceof Date, `${tag} tax rule (fractional rate stays a number)`);
+
+  // partners, agreements, settlements
+  const payable = await ledgerIn("Sundry Creditors", "Bilaspur CC Partner");
+  const partner = await r.partners.create({ orgId, code: "BLS", name: "Bilaspur CC", kind: "collection_centre", branchId: b2.id, pan: "ABCDE1234F", ledgerId: payable.id, tds: { section: "194H", rateBp: 200 }, active: true });
+  ok(partner.tds?.rateBp === 200 && (await r.partners.get(partner.id))?.tds?.section === "194H", `${tag} partner with a TDS override`);
+  const ag = await r.partnerAgreements.create({ orgId, partnerId: partner.id, kind: "fixed_rate", rates: [{ code: "CBC", sharePaise: 8000 }], defaultSharePaise: 5000, effectiveFrom: new Date("2026-04-01T00:00:00+05:30"), effectiveTo: null });
+  const agBack = (await r.partnerAgreements.find({ partnerId: partner.id }))[0]!;
+  ok(agBack.id === ag.id && agBack.rates?.[0]?.sharePaise === 8000 && agBack.categories === undefined && agBack.shareBp === null, `${tag} agreement: rates round-trip`);
+  const sBase = {
+    orgId, branchId: branch.id, partnerId: partner.id, period: "2026-10", from: new Date("2026-10-01T00:00:00+05:30"), to: new Date("2026-10-31T23:59:59.999+05:30"),
+    lines: [{ invoiceId: b2b.id, invoiceNo: b2b.invoiceNo, day: "2026-10-03", code: "CBC", name: "CBC", netPaise: 39900, sharePaise: 8000, agreementId: ag.id }],
+    grossPaise: 39900, sharePaise: 8000, deductions: [{ label: "Tubes", amountPaise: 500 }], deductionsPaise: 500, tdsSection: "194H", tdsRateBp: 200, tdsBasePaise: 8000, tdsPaise: 200, netPaise: 7300, status: "draft" as const,
+  };
+  const s1 = await r.settlements.create({ ...sBase, periodKey: `${partner.id}:2026-10` });
+  ok(s1.lines[0]?.day === "2026-10-03" && s1.deductions[0]?.label === "Tubes" && (await r.settlements.get(s1.id))?.lines[0]?.sharePaise === 8000, `${tag} settlement lines and deductions round-trip`);
+  await rejects(r.settlements.create({ ...sBase, periodKey: `${partner.id}:2026-10` }), Error, `${tag} one live settlement per partner per month (unique periodKey)`);
+  await r.settlements.update(s1.id, { status: "cancelled", periodKey: null });
+  const s2 = await r.settlements.create({ ...sBase, periodKey: `${partner.id}:2026-10` });
+  await r.settlements.update(s2.id, { status: "cancelled", periodKey: null });
+  ok((await r.settlements.count({ partnerId: partner.id, status: "cancelled" })) === 2, `${tag} cancelled settlements free the month (several null periodKeys)`);
+
+  // cash closings
+  const cc = await r.cashClosings.create({ orgId, branchId: b2.id, day: "2026-10-14", bookPaise: 100000, countedPaise: 99500, differencePaise: -500, denominations: [{ valuePaise: 50000, count: 1 }, { valuePaise: 100, count: 495 }], closedBy: null });
+  ok(cc.denominations?.length === 2 && cc.differencePaise === -500, `${tag} cash closing with denominations`);
+  await rejects(r.cashClosings.create({ orgId, branchId: b2.id, day: "2026-10-14", bookPaise: 0, countedPaise: 0, differencePaise: 0 }), Error, `${tag} one cash closing per branch per day`);
+
+  // bank statements and lines
+  const bank = (await r.ledgers.findBySystemKey(orgId, "bank"))!;
+  const stmt = await r.bankStatements.create({ orgId, branchId: branch.id, ledgerId: bank.id, fileName: "oct.csv", from: null, to: null, lineCount: 1 });
+  const line = await r.bankLines.create({ orgId, statementId: stmt.id, ledgerId: bank.id, date: new Date("2026-10-05T00:00:00+05:30"), description: "UPI SETTLEMENT", debitPaise: 0, creditPaise: 98000, dedupKey: "k1", status: "unmatched", voucherIds: [] });
+  ok(Array.isArray(line.voucherIds) && line.voucherIds.length === 0 && line.status === "unmatched", `${tag} bank line stored`);
+  await r.bankLines.update(line.id, { status: "matched", matchKind: "settlement", voucherIds: [b2b.id], settlement: { ledgerId: bank.id, day: "2026-10-04", grossPaise: 100000, feePaise: 2000 } });
+  const lineBack = (await r.bankLines.get(line.id))!;
+  ok(lineBack.voucherIds[0] === b2b.id && lineBack.settlement?.feePaise === 2000 && (await r.bankLines.count({ ledgerId: bank.id, status: "matched" })) === 1, `${tag} bank line match fields round-trip`);
+  await rejects(r.bankLines.create({ orgId, statementId: stmt.id, ledgerId: bank.id, date: new Date(), description: "dup", debitPaise: 0, creditPaise: 1, dedupKey: "k1", status: "unmatched", voucherIds: [] }), Error, `${tag} bank line dedupKey is unique (re-import adds nothing)`);
+
+  // credit notes
+  const cn = await r.creditNotes.create({
+    orgId, branchId: branch.id, invoiceId: b2b.id, customerId: cust.id, noteNo: "MGPL/RPR01/CN/2026-27/000001", date: new Date(), reason: "price correction",
+    lines: [{ itemIndex: 1, name: "Syringe", hsnSac: "9018", taxability: "taxable", taxPercent: 12, taxablePaise: 1000, taxPaise: 120, cgstPaise: 60, sgstPaise: 60, igstPaise: 0 }],
+    taxablePaise: 1000, taxPaise: 120, cgstPaise: 60, sgstPaise: 60, igstPaise: 0, roundOffPaise: 0, totalPaise: 1120, status: "issued",
+  });
+  ok((await r.creditNotes.listByDate({ orgId, from: new Date(Date.now() - day), to: new Date(Date.now() + day) }))[0]?.id === cn.id && (await r.creditNotes.find({ invoiceId: b2b.id }))[0]?.lines[0]?.cgstPaise === 60, `${tag} credit note stored and listed by date`);
+
+  // lock dates: postings and cancellations on or before the lock fail, inside the transaction
+  const cash = (await r.ledgers.findBySystemKey(orgId, "cash"))!;
+  const capital = (await r.ledgers.findBySystemKey(orgId, "capital"))!;
+  const jv = (date: Date, b = b2.id) => postVoucher(r, { orgId, branchId: b, type: "journal", date, entries: [{ ledgerId: cash.id, debitPaise: 100, creditPaise: 0 }, { ledgerId: capital.id, debitPaise: 0, creditPaise: 100 }] });
+  const sept = await jv(new Date("2026-09-15T10:00:00+05:30"));
+  const locks = await r.transaction((tx) => tx.periodLocks.hold(orgId, [b2.id, "org"], "update"));
+  ok(locks.length === 2 && locks.every((l) => l.lockedUpTo === null) && locks.some((l) => l.scope === "org" && l.branchId === null), `${tag} periodLocks.hold creates empty org and branch rows`);
+  const lockedUpTo = new Date("2026-09-30T23:59:59.999+05:30");
+  await r.transaction(async (tx) => {
+    const [l] = await tx.periodLocks.hold(orgId, [b2.id], "update");
+    await tx.periodLocks.update(l!.id, { lockedUpTo });
+  });
+  await rejects(jv(new Date("2026-09-30T18:00:00+05:30")), PeriodLockedError, `${tag} posting on the lock date fails`);
+  await rejects(cancelVoucher(r, sept.id), ConflictError, `${tag} cancelling a voucher in a locked period fails (ConflictError)`);
+  ok((await jv(new Date("2026-09-30T18:00:00+05:30"), branch.id)).status === "posted" && (await jv(new Date("2026-10-01T00:00:00+05:30"))).status === "posted", `${tag} other branches and later dates still post`);
+  // concurrency: a lock moved forward while a posting is in flight still stops it
+  let lockHeld!: () => void;
+  const lockHolding = new Promise<void>((res) => (lockHeld = res));
+  const mover = r.transaction(async (tx) => {
+    const [l] = await tx.periodLocks.hold(orgId, ["org"], "update");
+    lockHeld();
+    await sleep(300);
+    await tx.periodLocks.update(l!.id, { lockedUpTo: new Date("2026-10-10T23:59:59.999+05:30") });
+  });
+  await lockHolding;
+  await rejects(jv(new Date("2026-10-05T12:00:00+05:30"), branch.id), PeriodLockedError, `${tag} concurrent lock change: the in-flight posting waits, then fails`);
+  await mover;
+  await r.transaction(async (tx) => {
+    for (const l of await tx.periodLocks.hold(orgId, ["org", b2.id], "update")) await tx.periodLocks.update(l.id, { lockedUpTo: null });
+  });
+
+  // closing vouchers stay out of the P&L
+  const sales = (await r.ledgers.findBySystemKey(orgId, "sales"))!;
+  const from = new Date(Date.now() - day), to = new Date(Date.now() + day);
+  const before = await profitAndLoss(r, { orgId, from, to });
+  const closing = await postVoucher(r, { orgId, branchId: branch.id, type: "closing", entries: [{ ledgerId: sales.id, debitPaise: 1000, creditPaise: 0 }, { ledgerId: capital.id, debitPaise: 0, creditPaise: 1000 }] });
+  const after = await profitAndLoss(r, { orgId, from, to });
+  const tot = await r.ledgerEntries.totals({ orgId, ledgerId: sales.id, excludeVoucherTypes: ["closing"] });
+  const all = await r.ledgerEntries.totals({ orgId, ledgerId: sales.id });
+  ok(closing.voucherNo.startsWith("CLS/") && after.netProfitPaise === before.netProfitPaise && all[0]!.debitPaise - tot[0]!.debitPaise === 1000, `${tag} closing voucher ${closing.voucherNo}: left out of the P&L and of excludeVoucherTypes totals`);
+  await cancelVoucher(r, closing.id);
+
+  // posting hook: billing calls the configured hook inside its transaction
+  const calls: string[] = [];
+  const spy: PostingHook = {
+    async invoiceIssued(tx, inv, a) { calls.push(`issued:${tx.posting === spy}`); await defaultPostingHook.invoiceIssued(tx, inv, a); },
+    async paymentRecorded(tx, p, no, a) { calls.push(`paid:${p.mode}`); await defaultPostingHook.paymentRecorded(tx, p, no, a); },
+    async invoiceCancelled(tx, id, a) { calls.push("cancelled"); await defaultPostingHook.invoiceCancelled(tx, id, a); },
+  };
+  const hooked = await withPosting(spy);
+  const hi = await issueInvoice(hooked, { orgId, branchId: branch.id, patientId: patient.id, items: [{ name: "ESR", ratePaise: 9900 }], payments: [{ amountPaise: 5000, mode: "upi" }] });
+  await recordPayment(hooked, { invoiceId: hi.invoice.id, amountPaise: 4900, mode: "cash" });
+  const hc = await issueInvoice(hooked, { orgId, branchId: branch.id, patientId: patient.id, items: [{ name: "ESR", ratePaise: 9900 }] });
+  await cancelInvoice(hooked, hc.invoice.id, "test");
+  ok(calls.join(",") === "issued:true,paid:upi,paid:cash,issued:true,cancelled", `${tag} posting hook called by issueInvoice / recordPayment / cancelInvoice (${calls.join(",")})`);
+  ok((await trialBalance(r, { orgId })).differencePaise === 0, `${tag} books still balance`);
+  await hooked.close();
+}
+
 // ------------------------------------------------------------------ cache toolkit
 
 async function cacheSuite() {
@@ -241,7 +401,8 @@ async function main() {
   // MongoDB: a one-node replica set, so transactions are real
   const rs = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } });
   const mongo = await createDb({ backend: "mongo", mongo: { uri: rs.getUri("mgpl_test") } });
-  await contract(mongo);
+  const m = await contract(mongo);
+  await financeStorage(mongo, m.org, m.branch, (posting) => createMongoRepositories({ uri: rs.getUri("mgpl_test"), posting }));
   await graphqlSuite(mongo, ok);
 
   // a standalone server refuses multi-document work instead of silently losing atomicity
@@ -258,8 +419,10 @@ async function main() {
   await pg.initialise();
   await pg.start();
   await pg.createDatabase("mgpl_test");
-  const pgdb = await createDb({ backend: "pg", pg: { url: "postgres://postgres:postgres@localhost:54329/mgpl_test" } });
-  await contract(pgdb);
+  const pgUrl = "postgres://postgres:postgres@localhost:54329/mgpl_test";
+  const pgdb = await createDb({ backend: "pg", pg: { url: pgUrl } });
+  const p = await contract(pgdb);
+  await financeStorage(pgdb, p.org, p.branch, (posting) => createPgRepositories({ url: pgUrl, posting }));
   await graphqlSuite(pgdb, ok);
 
   const { redis, cache } = await cacheSuite();
