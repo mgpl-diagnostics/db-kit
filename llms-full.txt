@@ -554,7 +554,7 @@ Key facts for agents:
 ```json
 {
   "name": "@mgpl-diagnostics/db-kit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MGPL Diagnostics data layer: patients, bookings, samples, reports, invoices, payments, users, roles and audit — on MongoDB (Mongoose) or PostgreSQL (Sequelize) behind one repository API, with Tally-style double-entry accounting, storage for finance-kit (customers, partners, settlements, cash, bank, lock dates, tax rules, credit notes), a GraphQL module, a Redis cache toolkit, sessions, RBAC, and Fastify / Express adapters.",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
@@ -2848,7 +2848,7 @@ import type {
 
 export interface SeedInput {
   org: Pick<Organization, "name" | "code"> & Partial<Omit<Organization, "id" | "createdAt" | "updatedAt">>;
-  branch: Pick<Branch, "code" | "name"> & Partial<Pick<Branch, "kind" | "phone" | "gstin" | "address">>;
+  branch: Pick<Branch, "code" | "name"> & Partial<Pick<Branch, "kind" | "phone" | "gstin" | "stateCode" | "address">>;
   /** Hash the password with @mgpl-diagnostics/auth-kit (hashPassword) before calling. */
   owner: { name: string; email: string; passwordHash: string; phone?: string };
   /** Roles to create, e.g. SYSTEM_ROLES from auth-kit. The owner gets "owner". */
@@ -3006,8 +3006,8 @@ export function invoiceBalance(inv: Pick<Invoice, "totalPaise" | "creditedPaise"
   const credited = inv.creditedPaise ?? 0;
   const net = inv.totalPaise - credited;
   const duePaise = Math.max(0, net - paidPaise);
-  if (credited > 0 && net <= 0 && paidPaise <= 0) return { duePaise, status: "credited" };
   if (refund && paidPaise === 0) return { duePaise, status: "refunded" };
+  if (credited > 0 && net <= 0 && paidPaise <= 0) return { duePaise, status: "credited" };
   return { duePaise, status: statusFor(net, paidPaise) };
 }
 
@@ -4770,7 +4770,7 @@ function repo<T extends { id: Id }>(model: Model<any>, session?: ClientSession):
       return (await model.find({ _id: { $in: [...ids] } }, null, s).lean()).map((d: any) => toEntity<T>(d));
     },
     async update(id, patch) {
-      return toEntity<T>(await model.findByIdAndUpdate(id, { $set: clean(patch as any) }, { new: true, runValidators: true, ...s }).lean());
+      return toEntity<T>(await model.findByIdAndUpdate(id, { $set: clean(patch as any) }, { returnDocument: "after", runValidators: true, ...s }).lean());
     },
     async delete(id) {
       return (await model.deleteOne({ _id: id }, s)).deletedCount === 1;
@@ -4876,7 +4876,7 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
     };
     const counters: CounterRepo = {
       async next(key) {
-        const doc: any = await models.Counter.findOneAndUpdate({ _id: key }, { $inc: { seq: 1 } }, { upsert: true, new: true, ...s }).lean();
+        const doc: any = await models.Counter.findOneAndUpdate({ _id: key }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: "after", ...s }).lean();
         return doc.seq;
       },
       async peek(key) {
