@@ -50,6 +50,8 @@ export interface Branch extends Timestamps {
   kind: BranchKind;
   phone?: string;
   gstin?: string;
+  /** GST state code where the branch supplies from, e.g. "22" (Chhattisgarh). Falls back to the GSTIN's first two digits. */
+  stateCode?: string;
   address?: Address;
   active: boolean;
 }
@@ -207,8 +209,11 @@ export interface Report extends Timestamps {
 
 // ------------------------------------------------------------------ billing
 
-export type InvoiceStatus = "draft" | "issued" | "partially_paid" | "paid" | "cancelled" | "refunded";
+/** "credited": credit notes cover the whole invoice. */
+export type InvoiceStatus = "draft" | "issued" | "partially_paid" | "paid" | "cancelled" | "refunded" | "credited";
 export type ItemCategory = "test" | "package" | "service" | "consumable" | "medicine" | "other";
+/** How GST treats a line. Rates and exemptions are configuration (finance-kit tax rules), checked by the lab's CA. */
+export type Taxability = "taxable" | "exempt" | "nil_rated" | "non_gst";
 
 export interface InvoiceItem {
   code?: string;
@@ -219,6 +224,9 @@ export interface InvoiceItem {
   discountPaise: Paise;
   /** GST percent, 0–100. */
   taxPercent: number;
+  /** SAC (services) or HSN (goods) code, for GST returns. */
+  hsnSac?: string;
+  taxability?: Taxability;
   /** qty × rate − discount, before tax. */
   amountPaise: Paise;
 }
@@ -239,8 +247,17 @@ export interface Invoice extends Timestamps, InvoiceTotals {
   invoiceNo: string;
   patientId: Id;
   bookingId?: Id | null;
+  /** B2B customer billed (hospital, insurer/TPA, corporate); null for patient bills. */
+  customerId?: Id | null;
+  /** GST state code of the place of supply, e.g. "22". */
+  placeOfSupply?: string | null;
+  /** Buyer's GSTIN at the time of the invoice (B2B in GSTR-1). */
+  buyerGstin?: string | null;
   items: InvoiceItem[];
   paidPaise: Paise;
+  /** Sum of credit notes against this invoice (total incl. tax). */
+  creditedPaise: Paise;
+  /** total − credited − paid, never below 0. */
   duePaise: Paise;
   status: InvoiceStatus;
   issuedAt?: Date | null;
@@ -298,7 +315,8 @@ export interface Ledger extends Timestamps {
   active: boolean;
 }
 
-export type VoucherType = "sales" | "receipt" | "payment" | "journal" | "contra" | "credit_note" | "debit_note" | "purchase";
+/** "closing" = the year-end voucher that moves the P&L result to Reserves & Surplus (left out of profitAndLoss). */
+export type VoucherType = "sales" | "receipt" | "payment" | "journal" | "contra" | "credit_note" | "debit_note" | "purchase" | "closing";
 
 /** One line of a voucher. Exactly one of debit / credit is positive. */
 export interface VoucherEntry {
@@ -338,4 +356,273 @@ export interface LedgerEntry {
   debitPaise: Paise;
   creditPaise: Paise;
   invoiceId?: Id | null;
+}
+
+// ------------------------------------------------------------------ finance (storage for @mgpl-diagnostics/finance-kit)
+// Dates nested inside arrays are IST day strings ("2026-10-14"): JSONB would return them as strings anyway.
+
+/** A GST rule: which SAC/HSN, taxability and rate apply to an item code or a whole category from a date. */
+export interface TaxRule extends Timestamps {
+  id: Id;
+  orgId: Id;
+  /** Item code; null = the whole category. A code rule wins over a category rule. */
+  code?: string | null;
+  category?: ItemCategory | null;
+  /** SAC (services) or HSN (goods). */
+  hsnSac: string;
+  taxability: Taxability;
+  /** GST percent, 0–100 (0 unless taxable). */
+  ratePercent: number;
+  effectiveFrom: Date;
+  /** Inclusive; null = open-ended. */
+  effectiveTo?: Date | null;
+  note?: string;
+}
+
+export type CustomerKind = "hospital" | "insurer" | "tpa" | "corporate" | "other";
+
+/** A B2B customer billed on credit. */
+export interface Customer extends Timestamps {
+  id: Id;
+  orgId: Id;
+  /** Unique within the organisation, e.g. "CITYHOSP". */
+  code: string;
+  name: string;
+  kind: CustomerKind;
+  legalName?: string;
+  gstin?: string;
+  /** GST state code, e.g. "22". Falls back to the GSTIN's first two digits. */
+  stateCode?: string;
+  pan?: string;
+  phone?: string;
+  email?: string;
+  address?: Address;
+  /** null = no limit. */
+  creditLimitPaise: Paise | null;
+  /** Payment terms in days from the invoice date. */
+  creditDays: number;
+  /** The customer's own ledger under Sundry Debtors. */
+  ledgerId: Id;
+  active: boolean;
+}
+
+export type PartnerKind = "collection_centre" | "franchise";
+
+/** A business partner (collection centre or franchise) paid a share of what its tests bill. */
+export interface Partner extends Timestamps {
+  id: Id;
+  orgId: Id;
+  /** Unique within the organisation. */
+  code: string;
+  name: string;
+  kind: PartnerKind;
+  /** The branch (usually a collection_center) whose invoices count for this partner. */
+  branchId: Id;
+  legalName?: string;
+  pan?: string;
+  gstin?: string;
+  stateCode?: string;
+  phone?: string;
+  email?: string;
+  address?: Address;
+  /** The partner's payable ledger under Sundry Creditors. */
+  ledgerId: Id;
+  /** Overrides the default TDS (e.g. a lower-deduction certificate). Rate in basis points. */
+  tds?: { section: string; rateBp: number } | null;
+  active: boolean;
+}
+
+export type AgreementKind = "revenue_share" | "fixed_rate";
+
+/** What a partner earns, effective from a date. */
+export interface PartnerAgreement extends Timestamps {
+  id: Id;
+  orgId: Id;
+  partnerId: Id;
+  kind: AgreementKind;
+  /** revenue_share: share of the net billed value (after discounts, before GST) in basis points (2500 = 25%). */
+  shareBp?: number | null;
+  /** fixed_rate: amount per unit, by item code. */
+  rates?: { code: string; sharePaise: Paise }[];
+  /** fixed_rate: amount for codes not in `rates` (default 0). */
+  defaultSharePaise?: Paise | null;
+  /** Item categories that earn a share. Default: test, package. */
+  categories?: ItemCategory[];
+  effectiveFrom: Date;
+  /** Inclusive; null = open-ended. */
+  effectiveTo?: Date | null;
+  notes?: string;
+}
+
+export interface SettlementLine {
+  invoiceId: Id;
+  invoiceNo: string;
+  /** IST day of the invoice or credit note, "2026-10-03". */
+  day: string;
+  code?: string;
+  name: string;
+  /** Net billed value of the line (negative for a credit note). */
+  netPaise: Paise;
+  sharePaise: Paise;
+  agreementId: Id;
+  creditNoteId?: Id | null;
+}
+
+export interface SettlementDeduction {
+  label: string;
+  amountPaise: Paise;
+  /** Ledger credited; default: the "partner_recoveries" ledger. */
+  ledgerId?: Id | null;
+}
+
+export type SettlementStatus = "draft" | "accrued" | "paid" | "cancelled";
+
+/** A partner's statement for one month. */
+export interface Settlement extends Timestamps {
+  id: Id;
+  orgId: Id;
+  /** Branch whose books carry the vouchers. */
+  branchId: Id;
+  partnerId: Id;
+  /** "2026-10" */
+  period: string;
+  /** "<partnerId>:<period>" while not cancelled (unique); null once cancelled. */
+  periodKey?: string | null;
+  from: Date;
+  to: Date;
+  lines: SettlementLine[];
+  grossPaise: Paise;
+  sharePaise: Paise;
+  deductions: SettlementDeduction[];
+  deductionsPaise: Paise;
+  tdsSection?: string | null;
+  tdsRateBp: number;
+  /** Amount TDS was computed on (share, plus earlier shares of the year when the threshold is crossed). */
+  tdsBasePaise: Paise;
+  tdsPaise: Paise;
+  /** share − deductions − TDS */
+  netPaise: Paise;
+  status: SettlementStatus;
+  accrualVoucherId?: Id | null;
+  payoutVoucherId?: Id | null;
+  paidAt?: Date | null;
+  createdBy?: Id | null;
+}
+
+export interface CashDenomination {
+  valuePaise: Paise;
+  count: number;
+}
+
+/** A branch's day-end cash count. One per branch per day. */
+export interface CashClosing extends Timestamps {
+  id: Id;
+  orgId: Id;
+  branchId: Id;
+  /** IST day, "2026-10-14". */
+  day: string;
+  bookPaise: Paise;
+  countedPaise: Paise;
+  /** counted − book: negative = short, positive = excess. */
+  differencePaise: Paise;
+  denominations?: CashDenomination[];
+  voucherId?: Id | null;
+  closedBy?: Id | null;
+  notes?: string;
+}
+
+export interface BankStatement extends Timestamps {
+  id: Id;
+  orgId: Id;
+  branchId: Id;
+  /** The bank ledger this statement belongs to. */
+  ledgerId: Id;
+  fileName?: string;
+  from?: Date | null;
+  to?: Date | null;
+  openingPaise?: Paise | null;
+  closingPaise?: Paise | null;
+  lineCount: number;
+  importedBy?: Id | null;
+}
+
+export type BankLineStatus = "unmatched" | "matched" | "ignored";
+
+export interface BankLine extends Timestamps {
+  id: Id;
+  orgId: Id;
+  statementId: Id;
+  ledgerId: Id;
+  date: Date;
+  description: string;
+  reference?: string;
+  /** Money out of the account. */
+  debitPaise: Paise;
+  /** Money into the account. */
+  creditPaise: Paise;
+  balancePaise?: Paise | null;
+  /** Unique per organisation, so importing the same statement twice adds nothing. */
+  dedupKey: string;
+  status: BankLineStatus;
+  matchKind?: "entry" | "settlement" | "manual" | null;
+  /** Vouchers this line is matched with (their postings on the bank ledger). */
+  voucherIds: Id[];
+  /** Card / UPI settlement: the clearing ledger and IST day it settles. */
+  settlement?: { ledgerId: Id; day: string; grossPaise: Paise; feePaise: Paise } | null;
+  matchedBy?: Id | null;
+  matchedAt?: Date | null;
+}
+
+/** Lock date for the whole organisation (scope "org") or one branch (scope = branch id). */
+export interface PeriodLock extends Timestamps {
+  id: Id;
+  orgId: Id;
+  /** "org" or a branch id. Unique per organisation. */
+  scope: string;
+  branchId: Id | null;
+  /** No voucher dated on or before this instant may be posted or cancelled. null = nothing locked. */
+  lockedUpTo: Date | null;
+  reason?: string;
+  updatedBy?: Id | null;
+}
+
+export interface CreditNoteLine {
+  /** Index of the invoice item credited. */
+  itemIndex: number;
+  name: string;
+  code?: string;
+  hsnSac?: string;
+  taxability?: Taxability;
+  taxPercent: number;
+  taxablePaise: Paise;
+  taxPaise: Paise;
+  cgstPaise: Paise;
+  sgstPaise: Paise;
+  igstPaise: Paise;
+}
+
+/** A GST credit note against an invoice (refund or price correction). */
+export interface CreditNote extends Timestamps {
+  id: Id;
+  orgId: Id;
+  branchId: Id;
+  invoiceId: Id;
+  customerId?: Id | null;
+  /** Unique within the organisation. */
+  noteNo: string;
+  date: Date;
+  reason: string;
+  lines: CreditNoteLine[];
+  taxablePaise: Paise;
+  taxPaise: Paise;
+  cgstPaise: Paise;
+  sgstPaise: Paise;
+  igstPaise: Paise;
+  roundOffPaise: Paise;
+  totalPaise: Paise;
+  placeOfSupply?: string | null;
+  buyerGstin?: string | null;
+  voucherId?: Id | null;
+  status: "issued" | "cancelled";
+  createdBy?: Id | null;
 }

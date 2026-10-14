@@ -4,7 +4,8 @@
 
 Key facts for agents:
 - `const db = await createDb({ backend: "pg" | "mongo", pg: { url } | mongo: { uri }, redis? })` → `{ repos, rawRepos, cache, close }`.
-- Workflows (all transactional + audited): seedOrganization, registerPatient, createBooking, saveResults/transitionReport, issueInvoice, recordPayment, cancelInvoice; accounting: seedChartOfAccounts, postVoucher, cancelVoucher.
+- Workflows (all transactional + audited): seedOrganization, registerPatient, createBooking, saveResults/transitionReport, issueInvoice, recordPayment, cancelInvoice; accounting: seedChartOfAccounts, postVoucher, cancelVoucher (both refuse a locked period: PeriodLockedError 409).
+- Finance storage for finance-kit: taxRules, customers, partners, partnerAgreements, settlements, cashClosings, bankStatements, bankLines, periodLocks, creditNotes. Billing posts through a PostingHook (`createDb({ posting })`). See docs/FINANCE-STORAGE.md.
 - Reports: trialBalance, ledgerStatement, cashBook, dayBook, profitAndLoss, balanceSheet, outstandingReceivables, gstSummary.
 - Errors carry statusCode: NotFoundError 404, ConflictError 409, ValidationError 400, UnbalancedVoucherError 422; MongoDB without a replica set → TransactionsUnsupportedError.
 - Change a repository in both src/mongo and src/pg; `npm test` runs one contract suite on real MongoDB and PostgreSQL.
@@ -14,6 +15,7 @@ Key facts for agents:
 
 - [README](README.md): overview, workflows, books, ACID, cache, entry points
 - [AGENTS.md](AGENTS.md): map and rules
+- [docs/FINANCE-STORAGE.md](docs/FINANCE-STORAGE.md): storage for finance-kit, lock dates, posting hook, upgrading a database
 - [docs/MOVE-GRAPHQL-TO-BACKEND.md](docs/MOVE-GRAPHQL-TO-BACKEND.md): handoff for the GraphQL move
 - [llms-full.txt](llms-full.txt): every doc and source file in one document
 

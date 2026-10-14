@@ -2,9 +2,10 @@ import mongoose, { type ClientSession, type Connection, type ConnectOptions, typ
 
 /** The driver's TransactionOptions, without depending on the "mongodb" package directly. */
 type TransactionOptions = NonNullable<Parameters<ClientSession["withTransaction"]>[1]>;
+import { randomUUID } from "node:crypto";
 import type {
-  AuditRepo, CounterRepo, EntryQuery, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, PatientRepo, Repo,
-  Repositories, UserRepo, VoucherRepo,
+  AuditRepo, CounterRepo, CreditNoteRepo, DateQuery, EntryQuery, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, LockableRepo,
+  PatientRepo, PeriodLockRepo, PostingHook, Repo, Repositories, UserRepo, VoucherRepo,
 } from "../core/ports";
 import type { Id } from "../core/types";
 import { registerModels, schemas, type ModelName } from "./schemas";
@@ -24,6 +25,8 @@ export interface MongoOptions {
   allowNoTransactions?: boolean;
   /** Defaults: snapshot reads, majority writes, primary reads. */
   transactionOptions?: TransactionOptions;
+  /** Posting for invoices and payments (e.g. finance-kit's). Default: this package's accounting. */
+  posting?: PostingHook;
 }
 
 export class TransactionsUnsupportedError extends Error {
@@ -65,7 +68,24 @@ function entryMatch(q: EntryQuery) {
     ...(q.branchId ? { branchId: q.branchId } : {}),
     ...(q.ledgerId ? { ledgerId: q.ledgerId } : {}),
     ...(q.invoiceId ? { invoiceId: q.invoiceId } : {}),
+    ...(q.excludeVoucherTypes?.length ? { voucherType: { $nin: q.excludeVoucherTypes } } : {}),
     ...dateRange(q.from, q.to),
+  };
+}
+
+const fieldRange = (field: string, from?: Date, to?: Date) =>
+  from || to ? { [field]: { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) } } : {};
+
+const scoped = (q: DateQuery) => ({ orgId: q.orgId, ...(q.branchId ? { branchId: q.branchId } : {}) });
+
+/** A write inside the transaction takes the document's lock until commit (MongoDB has no SELECT … FOR UPDATE). */
+function lockable<T extends { id: Id }>(model: Model<any>, session?: ClientSession): LockableRepo<T> {
+  return {
+    ...repo<T>(model, session),
+    async getForUpdate(id) {
+      if (!session) return toEntity<T>(await model.findById(id).lean());
+      return toEntity<T>(await model.findOneAndUpdate({ _id: id }, { $inc: { lockVersion: 1 } }, { returnDocument: "after", session, timestamps: false }).lean());
+    },
   };
 }
 
@@ -85,7 +105,7 @@ function repo<T extends { id: Id }>(model: Model<any>, session?: ClientSession):
       return (await model.find({ _id: { $in: [...ids] } }, null, s).lean()).map((d: any) => toEntity<T>(d));
     },
     async update(id, patch) {
-      return toEntity<T>(await model.findByIdAndUpdate(id, { $set: clean(patch as any) }, { new: true, runValidators: true, ...s }).lean());
+      return toEntity<T>(await model.findByIdAndUpdate(id, { $set: clean(patch as any) }, { returnDocument: "after", runValidators: true, ...s }).lean());
     },
     async delete(id) {
       return (await model.deleteOne({ _id: id }, s)).deletedCount === 1;
@@ -144,15 +164,42 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
       },
     };
     const invoices: InvoiceRepo = {
-      ...repo(models.Invoice, session),
-      async getForUpdate(id) {
-        // a write inside the transaction takes the document's lock until commit
-        if (!session) return toEntity(await models.Invoice.findById(id).lean());
-        return toEntity(await models.Invoice.findOneAndUpdate({ _id: id }, { $inc: { lockVersion: 1 } }, { new: true, session }).lean());
-      },
+      ...lockable(models.Invoice, session),
       async listOutstanding(orgId, branchId) {
         const docs = await models.Invoice.find({ orgId, ...(branchId ? { branchId } : {}), status: { $in: ["issued", "partially_paid"] }, duePaise: { $gt: 0 } }, null, s).sort({ issuedAt: 1 }).lean();
         return docs.map((d) => toEntity(d));
+      },
+      async listByDate(q) {
+        const docs = await models.Invoice.find({
+          ...scoped(q), ...(q.customerId ? { customerId: q.customerId } : {}), ...fieldRange("issuedAt", q.from, q.to),
+          status: q.includeCancelled ? { $ne: "draft" } : { $nin: ["draft", "cancelled"] },
+        }, null, s).sort({ issuedAt: 1, invoiceNo: 1 }).lean();
+        return docs.map((d) => toEntity(d));
+      },
+    };
+    const creditNotes: CreditNoteRepo = {
+      ...repo(models.CreditNote, session),
+      async listByDate(q) {
+        const docs = await models.CreditNote.find({ ...scoped(q), ...fieldRange("date", q.from, q.to), ...(q.includeCancelled ? {} : { status: "issued" }) }, null, s)
+          .sort({ date: 1, noteNo: 1 }).lean();
+        return docs.map((d) => toEntity(d));
+      },
+    };
+    const periodLocks: PeriodLockRepo = {
+      ...repo(models.PeriodLock, session),
+      async hold(orgId, scopes) {
+        // Both modes write the lock document: in MongoDB only a write makes a concurrent writer conflict.
+        const out = [];
+        for (const scope of [...new Set(scopes)].sort()) {
+          const now = new Date();
+          const doc = await models.PeriodLock.findOneAndUpdate(
+            { orgId, scope },
+            { $inc: { lockVersion: 1 }, $setOnInsert: { _id: randomUUID(), branchId: scope === "org" ? null : scope, lockedUpTo: null, updatedBy: null, createdAt: now, updatedAt: now } },
+            { upsert: true, returnDocument: "after", timestamps: false, ...s },
+          ).lean();
+          out.push(toEntity<any>(doc));
+        }
+        return out;
       },
     };
     const audit: AuditRepo = {
@@ -164,7 +211,7 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
     };
     const counters: CounterRepo = {
       async next(key) {
-        const doc: any = await models.Counter.findOneAndUpdate({ _id: key }, { $inc: { seq: 1 } }, { upsert: true, new: true, ...s }).lean();
+        const doc: any = await models.Counter.findOneAndUpdate({ _id: key }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: "after", ...s }).lean();
         return doc.seq;
       },
       async peek(key) {
@@ -229,6 +276,17 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
       ledgers,
       vouchers,
       ledgerEntries,
+      taxRules: repo(models.TaxRule, session),
+      customers: lockable(models.Customer, session),
+      partners: repo(models.Partner, session),
+      partnerAgreements: repo(models.PartnerAgreement, session),
+      settlements: lockable(models.Settlement, session),
+      cashClosings: repo(models.CashClosing, session),
+      bankStatements: repo(models.BankStatement, session),
+      bankLines: repo(models.BankLine, session),
+      periodLocks,
+      creditNotes,
+      posting: opts.posting,
       async transaction(fn) {
         if (session) return fn(self); // already inside one: join it
         if (!(await transactionsSupported())) {

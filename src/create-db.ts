@@ -1,6 +1,6 @@
 import type { Redis } from "ioredis";
 import type { Cache, CacheOptions } from "./cache/cache";
-import type { Backend, Repositories } from "./core/ports";
+import type { Backend, PostingHook, Repositories } from "./core/ports";
 import type { MongoOptions } from "./mongo/index";
 import type { PgOptions } from "./pg/index";
 
@@ -20,6 +20,8 @@ export interface CreateDbOptions {
   };
   /** Create collections / tables and indexes on start. Default true. */
   sync?: boolean;
+  /** Posting for invoices and payments, e.g. finance-kit's `financePosting`. Default: this package's accounting. */
+  posting?: PostingHook;
 }
 
 export interface Db {
@@ -41,8 +43,8 @@ export interface Db {
 export async function createDb(o: CreateDbOptions): Promise<Db> {
   const rawRepos =
     o.backend === "mongo"
-      ? await (await import("./mongo/index")).createMongoRepositories(o.mongo ?? {})
-      : await (await import("./pg/index")).createPgRepositories(o.pg ?? {});
+      ? await (await import("./mongo/index")).createMongoRepositories({ posting: o.posting, ...o.mongo })
+      : await (await import("./pg/index")).createPgRepositories({ posting: o.posting, ...o.pg });
   if (o.sync !== false) await rawRepos.sync();
 
   let redis: Redis | undefined;

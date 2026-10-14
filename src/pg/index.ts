@@ -1,7 +1,7 @@
 import { Op, QueryTypes, Sequelize, Transaction, type Model, type ModelStatic, type Options } from "sequelize";
 import type {
-  AuditRepo, CounterRepo, EntryQuery, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, PatientRepo, Repo,
-  Repositories, UserRepo, VoucherRepo,
+  AuditRepo, CounterRepo, CreditNoteRepo, DateQuery, EntryQuery, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, LockableRepo,
+  PatientRepo, PeriodLockRepo, PostingHook, Repo, Repositories, UserRepo, VoucherRepo,
 } from "../core/ports";
 import type { Id } from "../core/types";
 import { defineModels, definitions } from "./models";
@@ -18,15 +18,19 @@ export interface PgOptions {
   isolationLevel?: Transaction.ISOLATION_LEVELS;
   /** Retries after a deadlock or serialization failure (SQLSTATE 40P01 / 40001). Default 3. */
   retries?: number;
+  /** Posting for invoices and payments (e.g. finance-kit's). Default: this package's accounting. */
+  posting?: PostingHook;
 }
 
 const RETRYABLE = new Set(["40001", "40P01"]);
 const sqlState = (e: any): string | undefined => e?.parent?.code ?? e?.original?.code ?? e?.code;
 
-function dateWhere(from?: Date, to?: Date) {
+function dateWhere(from?: Date, to?: Date, field = "date") {
   if (!from && !to) return {};
-  return { date: { ...(from ? { [Op.gte]: from } : {}), ...(to ? { [Op.lte]: to } : {}) } };
+  return { [field]: { ...(from ? { [Op.gte]: from } : {}), ...(to ? { [Op.lte]: to } : {}) } };
 }
+
+const scoped = (q: DateQuery) => ({ orgId: q.orgId, ...(q.branchId ? { branchId: q.branchId } : {}) });
 
 const clean = (o: Record<string, unknown>) => {
   const out: Record<string, unknown> = {};
@@ -90,6 +94,16 @@ function repo<T extends { id: Id }>(model: ModelStatic<Model>, transaction?: Tra
   };
 }
 
+/** SELECT … FOR UPDATE inside a transaction: concurrent writers of the same row wait for each other. */
+function lockable<T extends { id: Id }>(model: ModelStatic<Model>, transaction?: Transaction): LockableRepo<T> {
+  return {
+    ...repo<T>(model, transaction),
+    async getForUpdate(id) {
+      return toEntity<T>(await model.findByPk(id, transaction ? { transaction, lock: transaction.LOCK.UPDATE } : {}), model.name);
+    },
+  };
+}
+
 export async function createPgRepositories(opts: PgOptions): Promise<Repositories> {
   const sequelize = opts.sequelize ?? new Sequelize(opts.url!, { dialect: "postgres", logging: false, ...opts.options });
   const owned = !opts.sequelize;
@@ -118,11 +132,8 @@ export async function createPgRepositories(opts: PgOptions): Promise<Repositorie
       },
     };
     const invoices: InvoiceRepo = {
-      ...repo(m.Invoice!, transaction),
-      async getForUpdate(id) {
-        // SELECT … FOR UPDATE: concurrent payments on the same invoice wait for each other
-        return toEntity(await m.Invoice!.findByPk(id, transaction ? { transaction, lock: transaction.LOCK.UPDATE } : {}), "Invoice");
-      },
+      // getForUpdate: concurrent payments on the same invoice wait for each other
+      ...lockable(m.Invoice!, transaction),
       async listOutstanding(orgId, branchId) {
         const rows = await m.Invoice!.findAll({
           where: { orgId, ...(branchId ? { branchId } : {}), status: ["issued", "partially_paid"], duePaise: { [Op.gt]: 0 } },
@@ -130,6 +141,42 @@ export async function createPgRepositories(opts: PgOptions): Promise<Repositorie
           ...t,
         });
         return rows.map((r) => toEntity<any>(r, "Invoice"));
+      },
+      async listByDate(q) {
+        const rows = await m.Invoice!.findAll({
+          where: {
+            ...scoped(q), ...(q.customerId ? { customerId: q.customerId } : {}), ...dateWhere(q.from, q.to, "issuedAt"),
+            status: { [Op.notIn]: q.includeCancelled ? ["draft"] : ["draft", "cancelled"] },
+          },
+          order: [["issuedAt", "ASC"], ["invoiceNo", "ASC"]],
+          ...t,
+        });
+        return rows.map((r) => toEntity<any>(r, "Invoice"));
+      },
+    };
+    const creditNotes: CreditNoteRepo = {
+      ...repo(m.CreditNote!, transaction),
+      async listByDate(q) {
+        const rows = await m.CreditNote!.findAll({
+          where: { ...scoped(q), ...dateWhere(q.from, q.to), ...(q.includeCancelled ? {} : { status: "issued" }) },
+          order: [["date", "ASC"], ["noteNo", "ASC"]],
+          ...t,
+        });
+        return rows.map((r) => toEntity<any>(r, "CreditNote"));
+      },
+    };
+    const periodLocks: PeriodLockRepo = {
+      ...repo(m.PeriodLock!, transaction),
+      async hold(orgId, scopes, mode) {
+        const keys = [...new Set(scopes)].sort();
+        // create missing rows (ON CONFLICT DO NOTHING), then lock them in a fixed order
+        await m.PeriodLock!.bulkCreate(keys.map((scope) => ({ orgId, scope, branchId: scope === "org" ? null : scope, lockedUpTo: null })), { ignoreDuplicates: true, ...t });
+        const rows = await m.PeriodLock!.findAll({
+          where: { orgId, scope: keys },
+          order: [["scope", "ASC"]],
+          ...(transaction ? { transaction, lock: mode === "update" ? transaction.LOCK.UPDATE : transaction.LOCK.SHARE } : {}),
+        });
+        return rows.map((r) => toEntity<any>(r, "PeriodLock"));
       },
     };
     const ledgers: LedgerRepo = {
@@ -152,6 +199,7 @@ export async function createPgRepositories(opts: PgOptions): Promise<Repositorie
     const entryWhere = (q: EntryQuery) => ({
       orgId: q.orgId, ...(q.branchId ? { branchId: q.branchId } : {}), ...(q.ledgerId ? { ledgerId: q.ledgerId } : {}),
       ...(q.invoiceId ? { invoiceId: q.invoiceId } : {}), ...dateWhere(q.from, q.to),
+      ...(q.excludeVoucherTypes?.length ? { voucherType: { [Op.notIn]: q.excludeVoucherTypes } } : {}),
     });
     const ledgerEntries: LedgerEntryRepo = {
       async insertMany(entries) {
@@ -217,6 +265,17 @@ export async function createPgRepositories(opts: PgOptions): Promise<Repositorie
       ledgers,
       vouchers,
       ledgerEntries,
+      taxRules: repo(m.TaxRule!, transaction),
+      customers: lockable(m.Customer!, transaction),
+      partners: repo(m.Partner!, transaction),
+      partnerAgreements: repo(m.PartnerAgreement!, transaction),
+      settlements: lockable(m.Settlement!, transaction),
+      cashClosings: repo(m.CashClosing!, transaction),
+      bankStatements: repo(m.BankStatement!, transaction),
+      bankLines: repo(m.BankLine!, transaction),
+      periodLocks,
+      creditNotes,
+      posting: opts.posting,
       async transaction(fn) {
         if (transaction) return fn(self); // already inside one: join it
         const attempts = (opts.retries ?? 3) + 1;

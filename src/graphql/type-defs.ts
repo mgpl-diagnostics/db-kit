@@ -12,13 +12,13 @@ export const typeDefs = /* GraphQL */ `
   enum CollectionType { walk_in home }
   enum SampleStatus { pending collected received rejected }
   enum ReportStatus { draft entered verified released amended }
-  enum InvoiceStatus { draft issued partially_paid paid cancelled refunded }
+  enum InvoiceStatus { draft issued partially_paid paid cancelled refunded credited }
   enum ItemCategory { test package service consumable medicine other }
   enum PaymentMode { cash upi card netbanking wallet cheque insurance }
   enum PaymentKind { payment refund }
   enum ResultFlag { L H A NONE }
   enum AccountNature { assets liabilities income expenses }
-  enum VoucherType { sales receipt payment journal contra credit_note debit_note purchase }
+  enum VoucherType { sales receipt payment journal contra credit_note debit_note purchase closing }
   enum VoucherStatus { posted cancelled }
   enum AgeBucket { D0_30 D31_60 D61_90 D90_PLUS }
 

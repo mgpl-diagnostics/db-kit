@@ -2,7 +2,7 @@
 
 **Audience:** the AI agent (or developer) doing the move. Follow the checklist top to bottom.
 **Status (2026-10-13):** not started. Everything below currently lives in db-kit and passes its tests
-(`npm test`: 134 checks; 38 of them are the GraphQL suite).
+(`npm test`: 194 checks; 38 of them are the GraphQL suite).
 
 ## Why
 

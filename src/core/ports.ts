@@ -1,6 +1,7 @@
 import type {
-  AccountGroup, AuditEntry, Booking, Branch, Doctor, Id, Invoice, Ledger, LedgerEntry, New, Organization, Patient, Payment,
-  Report, Role, Sample, User, Voucher,
+  AccountGroup, AuditEntry, BankLine, BankStatement, Booking, Branch, CashClosing, CreditNote, Customer, Doctor, Id, Invoice, Ledger,
+  LedgerEntry, New, Organization, Partner, PartnerAgreement, Patient, Payment, PeriodLock, Report, Role, Sample, Settlement, TaxRule, User,
+  Voucher, VoucherType,
 } from "./types";
 
 /** Equality filter on top-level fields. Portable across both backends. */
@@ -36,11 +37,25 @@ export interface PatientRepo extends Repo<Patient> {
   search(orgId: Id, query: string, limit?: number): Promise<Patient[]>;
 }
 
-export interface InvoiceRepo extends Repo<Invoice> {
-  /** Inside a transaction: read and lock the invoice row/document until commit. */
-  getForUpdate(id: Id): Promise<Invoice | null>;
+/** A repository whose rows can be locked inside a transaction. */
+export interface LockableRepo<T extends { id: Id }> extends Repo<T> {
+  /** Inside a transaction: read and lock the row/document until commit. */
+  getForUpdate(id: Id): Promise<T | null>;
+}
+
+/** Filter for documents by date. `from` and `to` are inclusive. */
+export interface DateQuery {
+  orgId: Id;
+  branchId?: Id;
+  from?: Date;
+  to?: Date;
+}
+
+export interface InvoiceRepo extends LockableRepo<Invoice> {
   /** Issued / partly paid invoices with an amount due, oldest first. */
   listOutstanding(orgId: Id, branchId?: Id): Promise<Invoice[]>;
+  /** By issue date, oldest first (then invoice number). Drafts are left out; cancelled ones only on request. */
+  listByDate(query: DateQuery & { customerId?: Id; includeCancelled?: boolean }): Promise<Invoice[]>;
 }
 
 export interface AuditRepo {
@@ -83,6 +98,8 @@ export interface EntryQuery {
   invoiceId?: Id;
   from?: Date;
   to?: Date;
+  /** Leave out postings of these voucher types (e.g. "closing" for a P&L). */
+  excludeVoucherTypes?: VoucherType[];
 }
 
 export interface LedgerTotals {
@@ -98,6 +115,33 @@ export interface LedgerEntryRepo {
   list(query: EntryQuery, options?: { limit?: number; offset?: number }): Promise<LedgerEntry[]>;
   /** Debit and credit sums per ledger. */
   totals(query: EntryQuery): Promise<LedgerTotals[]>;
+}
+
+export interface CreditNoteRepo extends Repo<CreditNote> {
+  /** By date, oldest first (then note number). Cancelled notes only on request. */
+  listByDate(query: DateQuery & { includeCancelled?: boolean }): Promise<CreditNote[]>;
+}
+
+export type HoldMode = "share" | "update";
+
+export interface PeriodLockRepo extends Repo<PeriodLock> {
+  /**
+   * Inside a transaction: reads the lock rows of these scopes ("org" and/or branch ids), creating
+   * empty ones, and holds them until commit. "share" (posting) lets other postings through but makes a
+   * concurrent lock change wait for this transaction (PostgreSQL) or conflict and retry (MongoDB);
+   * "update" (changing a lock) is exclusive.
+   */
+  hold(orgId: Id, scopes: string[], mode: HoldMode): Promise<PeriodLock[]>;
+}
+
+/**
+ * Called by the billing workflows, inside their transaction, to post the books. The default posts
+ * with this package's accounting; an accounting kit (finance-kit today, tally-kit later) supplies its own.
+ */
+export interface PostingHook {
+  invoiceIssued(tx: Repositories, invoice: Invoice, actorId?: string): Promise<void>;
+  paymentRecorded(tx: Repositories, payment: Payment, invoiceNo: string, actorId?: string): Promise<void>;
+  invoiceCancelled(tx: Repositories, invoiceId: string, actorId?: string): Promise<void>;
 }
 
 export type Backend = "mongo" | "pg";
@@ -122,6 +166,19 @@ export interface Repositories {
   ledgers: LedgerRepo;
   vouchers: VoucherRepo;
   ledgerEntries: LedgerEntryRepo;
+  // finance (used by @mgpl-diagnostics/finance-kit)
+  taxRules: Repo<TaxRule>;
+  customers: LockableRepo<Customer>;
+  partners: Repo<Partner>;
+  partnerAgreements: Repo<PartnerAgreement>;
+  settlements: LockableRepo<Settlement>;
+  cashClosings: Repo<CashClosing>;
+  bankStatements: Repo<BankStatement>;
+  bankLines: Repo<BankLine>;
+  periodLocks: PeriodLockRepo;
+  creditNotes: CreditNoteRepo;
+  /** Posting for invoices and payments; the default (this package's accounting) when unset. */
+  readonly posting?: PostingHook;
   /**
    * Runs `fn` atomically. Use the `tx` repositories inside it. MongoDB needs a replica set for
    * transactions; on a standalone server the work runs without one.
@@ -145,6 +202,14 @@ export class ConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConflictError";
+  }
+}
+
+/** A voucher dated on or before a lock date was posted, cancelled or changed. */
+export class PeriodLockedError extends ConflictError {
+  constructor(date: Date, lockedUpTo: Date, scope: string) {
+    super(`Books are locked up to ${lockedUpTo.toISOString()} (${scope === "org" ? "organisation" : `branch ${scope}`}); ${date.toISOString()} is in a locked period`);
+    this.name = "PeriodLockedError";
   }
 }
 

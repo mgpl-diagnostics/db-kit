@@ -35,7 +35,7 @@ export const definitions: Record<string, Def> = {
     table: "branches",
     attributes: {
       id: id(), orgId: ref("organizations"), code: { type: STRING(16), allowNull: false }, name: { type: STRING, allowNull: false },
-      kind: { ...oneOf("lab", "collection_center"), defaultValue: "lab" }, phone: STRING(20), gstin: STRING(15), address: JSONB,
+      kind: { ...oneOf("lab", "collection_center"), defaultValue: "lab" }, phone: STRING(20), gstin: STRING(15), stateCode: STRING(2), address: JSONB,
       active: { type: BOOLEAN, allowNull: false, defaultValue: true },
     },
     indexes: [{ fields: ["org_id", "code"], unique: true }],
@@ -105,16 +105,32 @@ export const definitions: Record<string, Def> = {
     },
     indexes: [{ fields: ["booking_id"] }, { fields: ["patient_id", "created_at"] }, { fields: ["org_id", "status"] }],
   },
+  Customer: {
+    table: "customers",
+    attributes: {
+      id: id(), orgId: ref("organizations"), code: { type: STRING(32), allowNull: false }, name: { type: STRING, allowNull: false },
+      kind: { ...oneOf("hospital", "insurer", "tpa", "corporate", "other"), defaultValue: "other" }, legalName: STRING, gstin: STRING(15), stateCode: STRING(2),
+      pan: STRING(10), phone: STRING(20), email: STRING, address: JSONB, creditLimitPaise: { type: INTEGER, allowNull: true, defaultValue: null },
+      creditDays: { type: INTEGER, allowNull: false, defaultValue: 0, validate: { min: 0 } }, ledgerId: ref("ledgers"),
+      active: { type: BOOLEAN, allowNull: false, defaultValue: true },
+    },
+    indexes: [{ fields: ["org_id", "code"], unique: true }, { fields: ["org_id", "name"] }],
+  },
   Invoice: {
     table: "invoices",
     attributes: {
       id: id(), orgId: ref("organizations"), branchId: ref("branches"), invoiceNo: { type: STRING(48), allowNull: false },
-      patientId: ref("patients"), bookingId: { ...ref("bookings", true), defaultValue: null }, items: { type: JSONB, allowNull: false, defaultValue: [] },
-      subtotalPaise: money(), discountPaise: money(), taxPaise: money(), roundOffPaise: money(), totalPaise: money(), paidPaise: money(), duePaise: money(),
-      status: { ...oneOf("draft", "issued", "partially_paid", "paid", "cancelled", "refunded"), defaultValue: "issued" },
+      patientId: ref("patients"), bookingId: { ...ref("bookings", true), defaultValue: null },
+      customerId: { ...ref("customers", true), defaultValue: null }, placeOfSupply: nullable(STRING(2)), buyerGstin: nullable(STRING(15)),
+      items: { type: JSONB, allowNull: false, defaultValue: [] },
+      subtotalPaise: money(), discountPaise: money(), taxPaise: money(), roundOffPaise: money(), totalPaise: money(), paidPaise: money(), creditedPaise: money(), duePaise: money(),
+      status: { ...oneOf("draft", "issued", "partially_paid", "paid", "cancelled", "refunded", "credited"), defaultValue: "issued" },
       issuedAt: nullable(DATE), createdBy: nullable(UUID), cancelReason: nullable(TEXT),
     },
-    indexes: [{ fields: ["org_id", "invoice_no"], unique: true }, { fields: ["patient_id"] }, { fields: ["branch_id", "issued_at"] }, { fields: ["org_id", "status"] }],
+    indexes: [
+      { fields: ["org_id", "invoice_no"], unique: true }, { fields: ["patient_id"] }, { fields: ["branch_id", "issued_at"] }, { fields: ["org_id", "status"] },
+      { fields: ["org_id", "issued_at"] }, { fields: ["customer_id", "issued_at"] },
+    ],
   },
   Payment: {
     table: "payments",
@@ -159,7 +175,7 @@ export const definitions: Record<string, Def> = {
     table: "vouchers",
     attributes: {
       id: id(), orgId: ref("organizations"), branchId: ref("branches"),
-      type: oneOf("sales", "receipt", "payment", "journal", "contra", "credit_note", "debit_note", "purchase"),
+      type: oneOf("sales", "receipt", "payment", "journal", "contra", "credit_note", "debit_note", "purchase", "closing"),
       voucherNo: { type: STRING(48), allowNull: false }, date: { type: DATE, allowNull: false }, narration: TEXT,
       entries: { type: JSONB, allowNull: false, defaultValue: [] }, invoiceId: { ...ref("invoices", true), defaultValue: null },
       paymentId: { ...ref("payments", true), defaultValue: null }, status: { ...oneOf("posted", "cancelled"), defaultValue: "posted" },
@@ -183,6 +199,99 @@ export const definitions: Record<string, Def> = {
     table: "counters",
     timestamps: false,
     attributes: { key: { type: STRING(128), primaryKey: true }, seq: { type: INTEGER, allowNull: false, defaultValue: 0 } },
+  },
+  // ---- finance (used by @mgpl-diagnostics/finance-kit)
+  TaxRule: {
+    table: "tax_rules",
+    attributes: {
+      id: id(), orgId: ref("organizations"), code: nullable(STRING(64)), category: nullable(STRING(32)), hsnSac: { type: STRING(16), allowNull: false },
+      taxability: oneOf("taxable", "exempt", "nil_rated", "non_gst"), ratePercent: { type: DataTypes.DOUBLE, allowNull: false, defaultValue: 0 },
+      effectiveFrom: { type: DATE, allowNull: false }, effectiveTo: nullable(DATE), note: TEXT,
+    },
+    indexes: [{ fields: ["org_id", "code"] }, { fields: ["org_id", "category"] }],
+  },
+  Partner: {
+    table: "partners",
+    attributes: {
+      id: id(), orgId: ref("organizations"), code: { type: STRING(32), allowNull: false }, name: { type: STRING, allowNull: false },
+      kind: { ...oneOf("collection_centre", "franchise"), defaultValue: "collection_centre" }, branchId: ref("branches"), legalName: STRING,
+      pan: STRING(10), gstin: STRING(15), stateCode: STRING(2), phone: STRING(20), email: STRING, address: JSONB, ledgerId: ref("ledgers"),
+      tds: nullable(JSONB), active: { type: BOOLEAN, allowNull: false, defaultValue: true },
+    },
+    indexes: [{ fields: ["org_id", "code"], unique: true }, { fields: ["branch_id"] }],
+  },
+  PartnerAgreement: {
+    table: "partner_agreements",
+    attributes: {
+      id: id(), orgId: ref("organizations"), partnerId: ref("partners"), kind: oneOf("revenue_share", "fixed_rate"),
+      shareBp: { type: INTEGER, allowNull: true, defaultValue: null, validate: { min: 0, max: 10000 } }, rates: { type: JSONB, allowNull: false, defaultValue: [] },
+      defaultSharePaise: nullable(INTEGER), categories: JSONB, effectiveFrom: { type: DATE, allowNull: false }, effectiveTo: nullable(DATE), notes: TEXT,
+    },
+    indexes: [{ fields: ["partner_id", "effective_from"] }],
+  },
+  Settlement: {
+    table: "settlements",
+    attributes: {
+      id: id(), orgId: ref("organizations"), branchId: ref("branches"), partnerId: ref("partners"), period: { type: STRING(7), allowNull: false },
+      periodKey: nullable(STRING(64)), from: { type: DATE, allowNull: false }, to: { type: DATE, allowNull: false },
+      lines: { type: JSONB, allowNull: false, defaultValue: [] }, grossPaise: money(), sharePaise: money(),
+      deductions: { type: JSONB, allowNull: false, defaultValue: [] }, deductionsPaise: money(), tdsSection: nullable(STRING(32)),
+      tdsRateBp: { type: INTEGER, allowNull: false, defaultValue: 0 }, tdsBasePaise: money(), tdsPaise: money(), netPaise: money(),
+      status: { ...oneOf("draft", "accrued", "paid", "cancelled"), defaultValue: "draft" },
+      accrualVoucherId: { ...ref("vouchers", true), defaultValue: null }, payoutVoucherId: { ...ref("vouchers", true), defaultValue: null },
+      paidAt: nullable(DATE), createdBy: nullable(UUID),
+    },
+    // PostgreSQL unique indexes allow many NULLs: a cancelled settlement (period_key null) frees its month
+    indexes: [{ fields: ["org_id", "period_key"], unique: true }, { fields: ["partner_id", "period"] }],
+  },
+  CashClosing: {
+    table: "cash_closings",
+    attributes: {
+      id: id(), orgId: ref("organizations"), branchId: ref("branches"), day: { type: STRING(10), allowNull: false },
+      bookPaise: money(), countedPaise: { type: INTEGER, allowNull: false, validate: { min: 0 } }, differencePaise: money(),
+      denominations: JSONB, voucherId: { ...ref("vouchers", true), defaultValue: null }, closedBy: nullable(UUID), notes: TEXT,
+    },
+    indexes: [{ fields: ["org_id", "branch_id", "day"], unique: true }],
+  },
+  BankStatement: {
+    table: "bank_statements",
+    attributes: {
+      id: id(), orgId: ref("organizations"), branchId: ref("branches"), ledgerId: ref("ledgers"), fileName: STRING,
+      from: nullable(DATE), to: nullable(DATE), openingPaise: nullable(INTEGER), closingPaise: nullable(INTEGER),
+      lineCount: { type: INTEGER, allowNull: false, defaultValue: 0 }, importedBy: nullable(UUID),
+    },
+    indexes: [{ fields: ["org_id", "ledger_id"] }],
+  },
+  BankLine: {
+    table: "bank_lines",
+    attributes: {
+      id: id(), orgId: ref("organizations"), statementId: ref("bank_statements"), ledgerId: ref("ledgers"), date: { type: DATE, allowNull: false },
+      description: { type: TEXT, allowNull: false, defaultValue: "" }, reference: STRING,
+      debitPaise: { type: INTEGER, allowNull: false, defaultValue: 0, validate: { min: 0 } }, creditPaise: { type: INTEGER, allowNull: false, defaultValue: 0, validate: { min: 0 } },
+      balancePaise: nullable(INTEGER), dedupKey: { type: STRING(64), allowNull: false },
+      status: { ...oneOf("unmatched", "matched", "ignored"), defaultValue: "unmatched" }, matchKind: nullable(STRING(16)),
+      voucherIds: { type: JSONB, allowNull: false, defaultValue: [] }, settlement: nullable(JSONB), matchedBy: nullable(UUID), matchedAt: nullable(DATE),
+    },
+    indexes: [{ fields: ["org_id", "dedup_key"], unique: true }, { fields: ["statement_id", "date"] }, { fields: ["org_id", "ledger_id", "status"] }],
+  },
+  PeriodLock: {
+    table: "period_locks",
+    attributes: {
+      id: id(), orgId: ref("organizations"), scope: { type: STRING(64), allowNull: false }, branchId: { ...ref("branches", true), defaultValue: null },
+      lockedUpTo: nullable(DATE), reason: TEXT, updatedBy: nullable(UUID),
+    },
+    indexes: [{ fields: ["org_id", "scope"], unique: true }],
+  },
+  CreditNote: {
+    table: "credit_notes",
+    attributes: {
+      id: id(), orgId: ref("organizations"), branchId: ref("branches"), invoiceId: ref("invoices"), customerId: { ...ref("customers", true), defaultValue: null },
+      noteNo: { type: STRING(48), allowNull: false }, date: { type: DATE, allowNull: false }, reason: { type: TEXT, allowNull: false },
+      lines: { type: JSONB, allowNull: false, defaultValue: [] }, taxablePaise: money(), taxPaise: money(), cgstPaise: money(), sgstPaise: money(), igstPaise: money(),
+      roundOffPaise: money(), totalPaise: money(), placeOfSupply: nullable(STRING(2)), buyerGstin: nullable(STRING(15)),
+      voucherId: { ...ref("vouchers", true), defaultValue: null }, status: { ...oneOf("issued", "cancelled"), defaultValue: "issued" }, createdBy: nullable(UUID),
+    },
+    indexes: [{ fields: ["org_id", "note_no"], unique: true }, { fields: ["invoice_id"] }, { fields: ["org_id", "date"] }],
   },
 };
 
