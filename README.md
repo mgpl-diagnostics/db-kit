@@ -137,7 +137,6 @@ Errors carry `statusCode`:
 | `…/mongo` · `…/pg` | `createMongoRepositories` · `createPgRepositories`, schemas / models |
 | `…/cache` | the cache toolkit |
 | `…/fastify` · `…/express` | adapters |
-| `…/graphql` | **moving to the backend repo.** See [docs/MOVE-GRAPHQL-TO-BACKEND.md](docs/MOVE-GRAPHQL-TO-BACKEND.md) |
 
 Peer dependencies are all optional: install only the ones you use (`mongoose`, or `sequelize` + `pg`
 + `pg-hstore`; `ioredis`; `fastify`).

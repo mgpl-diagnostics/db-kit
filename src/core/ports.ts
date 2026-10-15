@@ -136,7 +136,7 @@ export interface PeriodLockRepo extends Repo<PeriodLock> {
 
 /**
  * Called by the billing workflows, inside their transaction, to post the books. The default posts
- * with this package's accounting; an accounting kit (finance-kit today, tally-kit later) supplies its own.
+ * with this package's accounting; an accounting kit (finance-kit today, ledger-kit later) supplies its own.
  */
 export interface PostingHook {
   invoiceIssued(tx: Repositories, invoice: Invoice, actorId?: string): Promise<void>;

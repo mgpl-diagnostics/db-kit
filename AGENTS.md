@@ -4,8 +4,8 @@ The data layer for MGPL Diagnostics: one domain model on **MongoDB (Mongoose)** 
 (Sequelize)** behind the same repository interface, Tally-style double-entry accounting, a Redis cache
 toolkit, and Fastify / Express decorators.
 
-> **Pending move:** `src/graphql/` belongs in the backend repo. Read
-> [docs/MOVE-GRAPHQL-TO-BACKEND.md](docs/MOVE-GRAPHQL-TO-BACKEND.md) before touching GraphQL code.
+> **No GraphQL here.** The API lives in [mgpl-diagnostics/api](https://github.com/mgpl-diagnostics/api); the old
+> `src/graphql` module was removed in 2.0.0 (see [docs/MOVE-GRAPHQL-TO-BACKEND.md](docs/MOVE-GRAPHQL-TO-BACKEND.md)).
 
 ## Map
 
@@ -17,7 +17,6 @@ src/pg/         Sequelize models + repositories (row locks, retry on 40001/40P01
 src/cache/      cache-aside, single-flight, stampede lock, SWR, negative, tags, namespaces,
                 two-tier L1+L2, rate limiters, distributed lock, cached repositories
 src/adapters/   fastify (decorates app.db), express (attachDb, dbErrorHandler)
-src/graphql/    TO BE MOVED (see the handoff doc)
 scripts/test.ts one contract suite on real MongoDB + real PostgreSQL (in-process), plus cache and adapters
 ```
 

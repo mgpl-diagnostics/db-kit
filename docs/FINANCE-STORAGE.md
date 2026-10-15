@@ -78,7 +78,7 @@ const db = await createDb({ backend: "pg", pg: { url }, posting: financePosting 
 ```
 
 Spreading `{ ...repos, posting }` does **not** reach the `tx` repositories; use the option.
-When the accounting engine moves to its own kit (tally-kit), that kit implements this hook and
+When the accounting engine moves to its own kit (ledger-kit), that kit implements this hook and
 db-kit no longer imports the engine.
 
 ## Upgrading an existing database

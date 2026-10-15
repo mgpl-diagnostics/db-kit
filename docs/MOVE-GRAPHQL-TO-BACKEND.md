@@ -1,5 +1,8 @@
 # Handoff: move the GraphQL layer from db-kit to the backend repo
 
+> **Done.** The GraphQL layer now lives in [mgpl-diagnostics/api](https://github.com/mgpl-diagnostics/api).
+> db-kit 2.0.0 removed `src/graphql`, the `./graphql` export and the graphql peer dependencies. This page is kept as history.
+
 **Audience:** the AI agent (or developer) doing the move. Follow the checklist top to bottom.
 **Status (2026-10-13):** not started. Everything below currently lives in db-kit and passes its tests
 (`npm test`: 194 checks; 38 of them are the GraphQL suite).

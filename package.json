@@ -1,7 +1,7 @@
 {
   "name": "@mgpl-diagnostics/db-kit",
-  "version": "1.1.0",
-  "description": "MGPL Diagnostics data layer: patients, bookings, samples, reports, invoices, payments, users, roles and audit — on MongoDB (Mongoose) or PostgreSQL (Sequelize) behind one repository API, with Tally-style double-entry accounting, storage for finance-kit (customers, partners, settlements, cash, bank, lock dates, tax rules, credit notes), a GraphQL module, a Redis cache toolkit, sessions, RBAC, and Fastify / Express adapters.",
+  "version": "2.0.0",
+  "description": "MGPL Diagnostics data layer: patients, bookings, samples, reports, invoices, payments, users, roles and audit \u2014 on MongoDB (Mongoose) or PostgreSQL (Sequelize) behind one repository API, with Tally-style double-entry accounting, storage for finance-kit (customers, partners, settlements, cash, bank, lock dates, tax rules, credit notes), a Redis cache toolkit, sessions, RBAC, and Fastify / Express adapters.",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
   "repository": "github:mgpl-diagnostics/db-kit",
@@ -33,10 +33,6 @@
       "types": "./dist/express.d.ts",
       "import": "./dist/express.js"
     },
-    "./graphql": {
-      "types": "./dist/graphql.d.ts",
-      "import": "./dist/graphql.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -59,9 +55,7 @@
     "llms": "node scripts/llms-full.mjs @mgpl-diagnostics/db-kit README.md AGENTS.md llms.txt docs package.json src scripts"
   },
   "peerDependencies": {
-    "@graphql-tools/schema": ">=10",
     "fastify": ">=4",
-    "graphql": ">=16.10",
     "ioredis": ">=5",
     "mongoose": ">=8",
     "pg": ">=8",
@@ -69,13 +63,7 @@
     "sequelize": ">=6"
   },
   "peerDependenciesMeta": {
-    "@graphql-tools/schema": {
-      "optional": true
-    },
     "fastify": {
-      "optional": true
-    },
-    "graphql": {
       "optional": true
     },
     "ioredis": {
@@ -95,13 +83,9 @@
     }
   },
   "devDependencies": {
-    "@graphql-tools/schema": "^10.1.4",
     "@types/node": "^22.20.5",
-    "dataloader": "^2.2.3",
     "embedded-postgres": "^18.4.0-beta.17",
     "fastify": "^5.12.7",
-    "graphql": "^17.0.2",
-    "graphql-yoga": "^5.24.4",
     "ioredis": "^5.11.1",
     "ioredis-mock": "^8.13.1",
     "mongodb-memory-server": "^11.3.0",

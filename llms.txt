@@ -9,14 +9,14 @@ Key facts for agents:
 - Reports: trialBalance, ledgerStatement, cashBook, dayBook, profitAndLoss, balanceSheet, outstandingReceivables, gstSummary.
 - Errors carry statusCode: NotFoundError 404, ConflictError 409, ValidationError 400, UnbalancedVoucherError 422; MongoDB without a replica set → TransactionsUnsupportedError.
 - Change a repository in both src/mongo and src/pg; `npm test` runs one contract suite on real MongoDB and PostgreSQL.
-- src/graphql is moving to the backend repo: see docs/MOVE-GRAPHQL-TO-BACKEND.md.
+- No GraphQL here (removed in 2.0.0): the API is mgpl-diagnostics/api.
 
 ## Docs
 
 - [README](README.md): overview, workflows, books, ACID, cache, entry points
 - [AGENTS.md](AGENTS.md): map and rules
 - [docs/FINANCE-STORAGE.md](docs/FINANCE-STORAGE.md): storage for finance-kit, lock dates, posting hook, upgrading a database
-- [docs/MOVE-GRAPHQL-TO-BACKEND.md](docs/MOVE-GRAPHQL-TO-BACKEND.md): handoff for the GraphQL move
+- [docs/MOVE-GRAPHQL-TO-BACKEND.md](docs/MOVE-GRAPHQL-TO-BACKEND.md): the completed GraphQL move (history)
 - [llms-full.txt](llms-full.txt): every doc and source file in one document
 
 ## Source
