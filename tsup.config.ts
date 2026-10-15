@@ -8,12 +8,11 @@ export default defineConfig({
     cache: "src/cache/index.ts",
     fastify: "src/adapters/fastify.ts",
     express: "src/adapters/express.ts",
-    graphql: "src/graphql/index.ts",
   },
   format: ["esm"],
   dts: true,
   target: "node20",
   platform: "node",
   clean: true,
-  external: [/^node:/, "mongoose", "sequelize", "pg", "pg-hstore", "ioredis", "fastify", "graphql", "@graphql-tools/schema"],
+  external: [/^node:/, "mongoose", "sequelize", "pg", "pg-hstore", "ioredis", "fastify"],
 });

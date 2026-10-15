@@ -17,7 +17,6 @@ import { createMongoRepositories, TransactionsUnsupportedError } from "../src/mo
 import { createPgRepositories } from "../src/pg/index";
 import { mgplDb } from "../src/adapters/fastify";
 import { attachDb, dbErrorHandler } from "../src/adapters/express";
-import { graphqlSuite } from "./graphql-suite";
 
 let failed = 0;
 let passed = 0;
@@ -403,7 +402,6 @@ async function main() {
   const mongo = await createDb({ backend: "mongo", mongo: { uri: rs.getUri("mgpl_test") } });
   const m = await contract(mongo);
   await financeStorage(mongo, m.org, m.branch, (posting) => createMongoRepositories({ uri: rs.getUri("mgpl_test"), posting }));
-  await graphqlSuite(mongo, ok);
 
   // a standalone server refuses multi-document work instead of silently losing atomicity
   const standalone = await MongoMemoryServer.create();
@@ -423,7 +421,6 @@ async function main() {
   const pgdb = await createDb({ backend: "pg", pg: { url: pgUrl } });
   const p = await contract(pgdb);
   await financeStorage(pgdb, p.org, p.branch, (posting) => createPgRepositories({ url: pgUrl, posting }));
-  await graphqlSuite(pgdb, ok);
 
   const { redis, cache } = await cacheSuite();
 
