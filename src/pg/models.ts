@@ -310,7 +310,8 @@ export const definitions: Record<string, Def> = {
   ExternalReportFile: {
     table: "external_report_files",
     attributes: {
-      id: { ...ref("external_reports"), primaryKey: true, onDelete: "CASCADE" }, orgId: ref("organizations"),
+      // the file is stored first (its id becomes the external report's id once extracted), so no foreign key
+      id: { type: UUID, primaryKey: true }, orgId: ref("organizations"),
       sourceSha256: { type: STRING(64), allowNull: false }, byteLength: { type: INTEGER, allowNull: false }, pdf: { type: BLOB, allowNull: false },
     },
     indexes: [{ fields: ["org_id", "source_sha256"], unique: true }],

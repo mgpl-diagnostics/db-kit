@@ -7,7 +7,7 @@ mapping, who may see a signature) live in the api.
 | Repository | Table / collection | One row per | Notes |
 | --- | --- | --- | --- |
 | `externalReports` | `external_reports` | uploaded PDF | `sourceSha256` **unique per organisation** (the same PDF uploaded twice is one row); `extracted` is report-reader's `ExtractedReport`, as is; `status` extracted → matched → applied, or rejected; `warnings` |
-| `externalReportFiles` | `external_report_files` | PDF (id = the external report's id) | the original bytes, apart from the row so that lists never load them |
+| `externalReportFiles` | `external_report_files` | PDF (stored first; the external report made from it takes its id) | the original bytes, apart from the row so that lists never load them; `(orgId, sourceSha256)` unique |
 | `externalSignatories` | `external_signatories` | partner doctor or signer | the signature registry (`KnownSignature` for report-reader): name, qualification, registration, title, role, `sha[]`, `dhash[]`; `listForOrg(orgId, lab?)` is cached per organisation when Redis is configured, and cleared on every write |
 | `externalSignatures` | `external_signatures` | (organisation, `sourceSha256`, signature `sha`) | the PNG from that PDF, unique per PDF and signature |
 | `reportProvenance` | `report_provenance` | our report (unique `reportId`) | where its results came from: external report, `sourceSha256`, lab, performed by / at, medical signatories, NABL text (only for tests the partner marked), the partner's test name, sample id, reported time, and the results **as imported** (for audit when staff edit them) |

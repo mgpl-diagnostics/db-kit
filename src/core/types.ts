@@ -665,7 +665,10 @@ export interface ExternalReport extends Timestamps {
   rejectReason?: string | null;
 }
 
-/** The original PDF of an external report (id = the external report's id). Private. */
+/**
+ * The original PDF of an external report. Stored before extraction; the external report created from it
+ * takes the same id. Private.
+ */
 export interface ExternalReportFile extends Timestamps {
   id: Id;
   orgId: Id;
