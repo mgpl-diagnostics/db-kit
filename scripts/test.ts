@@ -1,6 +1,7 @@
 // npm test — the same contract suite against real MongoDB (single-node replica set) and real
 // PostgreSQL, both started in-process; then the Redis cache toolkit (ioredis-mock, or REDIS_URL),
 // and the Fastify / Express adapters.
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import EmbeddedPostgres from "embedded-postgres";
 import Fastify from "fastify";
@@ -185,6 +186,11 @@ async function externalImports(db: Db, org: Organization, branch: Branch, bookin
   const file = await r.externalReportFiles.get(ext.id);
   ok(file && Buffer.isBuffer(file.pdf) && Buffer.from(file.pdf).toString() === "%PDF", `${tag} the PDF bytes come back as a Buffer, stored apart from the row`);
   ok(!("pdf" in (await r.externalReports.find({ orgId: org.id } as any))[0]!), `${tag} listing external reports never loads PDF bytes`);
+  // the api stores the PDF first and creates the report (with the file's id) after extracting it
+  const early = randomUUID();
+  await r.externalReportFiles.create({ id: early, orgId: org.id, sourceSha256: "c".repeat(64), byteLength: pdf.byteLength, pdf });
+  ok((await r.externalReportFiles.get(early))?.byteLength === 4 && !(await r.externalReports.get(early)), `${tag} a PDF is stored before its external report exists (no foreign key)`);
+  await r.externalReportFiles.delete(early);
 
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
   await r.externalSignatures.create({ orgId: org.id, externalReportId: ext.id, sourceSha256: sha, sha: "0123456789abcdef", dhash: "ffff0000ffff0000", width: 120, height: 40, png });
