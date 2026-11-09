@@ -14,6 +14,7 @@ const Address = new Schema({ line1: String, line2: String, city: String, distric
 const RoleAssignment = new Schema({ role: { type: String, required: true }, branchId: { type: String, default: null } }, sub);
 const BookingTest = new Schema({ testCode: { type: String, required: true }, name: { type: String, required: true }, pricePaise: { type: Number, required: true, min: 0 }, sampleType: String }, sub);
 const ResultValue = new Schema({ parameter: { type: String, required: true }, value: { type: String, default: "" }, unit: String, flag: { type: String, enum: ["L", "H", "A", ""] }, range: String }, sub);
+const LABS = ["hypatho", "clinova"];
 const TAXABILITY = ["taxable", "exempt", "nil_rated", "non_gst"];
 const CATEGORIES = ["test", "package", "service", "consumable", "medicine", "other"];
 const InvoiceItem = new Schema(
@@ -277,6 +278,55 @@ export const schemas = {
     },
     opts,
   ).index({ orgId: 1, noteNo: 1 }, { unique: true }).index({ invoiceId: 1 }).index({ orgId: 1, date: 1 }),
+
+  // ---- partner-lab imports (report-reader in the api); PDFs, JSON and signatures are private
+  ExternalReport: new Schema(
+    {
+      _id: uuid, orgId: { type: String, required: true }, branchId: { type: String, required: true }, bookingId: { type: String, default: null },
+      lab: { type: String, enum: LABS, required: true }, labName: { type: String, required: true }, processedAt: { type: String, default: null },
+      sourceSha256: { type: String, required: true }, fileName: { type: String, default: null }, byteLength: { type: Number, default: 0 },
+      extracted: { type: Schema.Types.Mixed, default: {} },
+      status: { type: String, enum: ["extracted", "matched", "applied", "rejected"], default: "extracted" },
+      warnings: { type: [String], default: [] }, uploadedBy: { type: String, default: null }, uploadedAt: { type: Date, default: () => new Date() },
+      appliedBy: { type: String, default: null }, appliedAt: { type: Date, default: null }, rejectedBy: { type: String, default: null }, rejectReason: { type: String, default: null },
+    },
+    // keep empty objects inside `extracted` (e.g. dates: {}), as PostgreSQL does
+    { ...opts, minimize: false },
+  ).index({ orgId: 1, sourceSha256: 1 }, { unique: true }).index({ orgId: 1, status: 1 }).index({ bookingId: 1 }).index({ branchId: 1, uploadedAt: -1 }),
+
+  ExternalReportFile: new Schema(
+    { _id: { type: String, required: true }, orgId: { type: String, required: true }, sourceSha256: { type: String, required: true }, byteLength: { type: Number, required: true }, pdf: { type: Buffer, required: true } },
+    opts,
+  ).index({ orgId: 1, sourceSha256: 1 }, { unique: true }),
+
+  ExternalSignatory: new Schema(
+    {
+      _id: uuid, orgId: { type: String, required: true }, lab: { type: String, enum: LABS, required: true }, name: { type: String, required: true },
+      qualification: { type: String, default: null }, registration: { type: String, default: null }, title: { type: String, default: null }, role: { type: String, default: null },
+      sha: { type: [String], default: [] }, dhash: { type: [String], default: [] }, createdBy: { type: String, default: null }, verifiedBy: { type: String, default: null },
+    },
+    opts,
+  ).index({ orgId: 1, lab: 1 }),
+
+  ExternalSignature: new Schema(
+    {
+      _id: uuid, orgId: { type: String, required: true }, externalReportId: { type: String, required: true }, sourceSha256: { type: String, required: true },
+      sha: { type: String, required: true }, dhash: { type: String, default: "" }, width: { type: Number, required: true }, height: { type: Number, required: true },
+      png: { type: Buffer, required: true },
+    },
+    opts,
+  ).index({ orgId: 1, sourceSha256: 1, sha: 1 }, { unique: true }).index({ externalReportId: 1 }).index({ orgId: 1, sha: 1 }),
+
+  ReportProvenance: new Schema(
+    {
+      _id: uuid, orgId: { type: String, required: true }, reportId: { type: String, required: true }, externalReportId: { type: String, required: true },
+      sourceSha256: { type: String, required: true }, lab: { type: String, enum: LABS, required: true }, testIndex: { type: Number, required: true },
+      performedBy: { type: String, required: true }, performedAt: { type: String, default: null }, reportedBy: { type: Schema.Types.Mixed, default: [] },
+      accreditation: { type: Schema.Types.Mixed, default: null }, sourceTestName: { type: String, required: true }, sourceSampleId: { type: String, default: null },
+      sourceReportedAt: { type: String, default: null }, importedResults: { type: [ResultValue], default: [] }, appliedBy: { type: String, default: null },
+    },
+    { ...opts, minimize: false },
+  ).index({ reportId: 1 }, { unique: true }).index({ externalReportId: 1 }),
 };
 
 export type ModelName = keyof typeof schemas;

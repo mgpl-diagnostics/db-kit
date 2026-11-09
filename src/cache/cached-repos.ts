@@ -1,4 +1,4 @@
-import type { Repo, Repositories } from "../core/ports";
+import type { ExternalSignatoryRepo, Repo, Repositories } from "../core/ports";
 import type { Id } from "../core/types";
 import type { Cache } from "./cache";
 
@@ -31,6 +31,36 @@ function cachedRepo<T extends { id: Id }>(entity: string, inner: Repo<T>, cache:
   };
 }
 
+/**
+ * The partner signature registry, read on every import: listForOrg is cached per organisation (and
+ * lab), and every write through this repository clears that organisation's entries.
+ */
+function cachedSignatories(inner: ExternalSignatoryRepo, cache: Cache, ttl: number): ExternalSignatoryRepo {
+  const tag = (orgId: Id) => `extsig:org:${orgId}`;
+  const clear = (orgId: Id | undefined) => (orgId ? cache.invalidateTags(tag(orgId)) : Promise.resolve());
+  return {
+    ...inner,
+    listForOrg: (orgId, lab) => cache.getOrSet(`extsig:${orgId}:${lab ?? "*"}`, () => inner.listForOrg(orgId, lab), { ttl, staleTtl: 0, tags: [tag(orgId)] }),
+    async create(data) {
+      const out = await inner.create(data);
+      await clear(out.orgId);
+      return out;
+    },
+    async update(id, patch) {
+      const before = await inner.get(id);
+      const out = await inner.update(id, patch);
+      await clear(before?.orgId);
+      return out;
+    },
+    async delete(id) {
+      const before = await inner.get(id);
+      const out = await inner.delete(id);
+      await clear(before?.orgId);
+      return out;
+    },
+  };
+}
+
 /** Wraps the slow-changing, often-read repositories. Transactions use the uncached ones. */
 export function withCache(repos: Repositories, cache: Cache, ttlSeconds = 300): Repositories {
   return {
@@ -41,5 +71,6 @@ export function withCache(repos: Repositories, cache: Cache, ttlSeconds = 300): 
     doctors: cachedRepo("doctor", repos.doctors, cache, ttlSeconds),
     patients: { ...repos.patients, ...cachedRepo("patient", repos.patients, cache, 60) },
     ledgers: { ...repos.ledgers, ...cachedRepo("ledger", repos.ledgers, cache, ttlSeconds) },
+    externalSignatories: cachedSignatories(repos.externalSignatories, cache, ttlSeconds),
   };
 }

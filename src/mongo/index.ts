@@ -4,7 +4,7 @@ import mongoose, { type ClientSession, type Connection, type ConnectOptions, typ
 type TransactionOptions = NonNullable<Parameters<ClientSession["withTransaction"]>[1]>;
 import { randomUUID } from "node:crypto";
 import type {
-  AuditRepo, CounterRepo, CreditNoteRepo, DateQuery, EntryQuery, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, LockableRepo,
+  AuditRepo, CounterRepo, CreditNoteRepo, DateQuery, EntryQuery, ExternalSignatoryRepo, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, LockableRepo,
   PatientRepo, PeriodLockRepo, PostingHook, Repo, Repositories, UserRepo, VoucherRepo,
 } from "../core/ports";
 import type { Id } from "../core/types";
@@ -39,16 +39,24 @@ export class TransactionsUnsupportedError extends Error {
   }
 }
 
+/** BSON Binary (lean reads) or a MongooseBuffer → a plain Buffer, as PostgreSQL's BYTEA comes back. */
+const isBinary = (v: any) => v && typeof v === "object" && (v._bsontype === "Binary" || Buffer.isBuffer(v));
+const toBuffer = (v: any): Buffer => (v._bsontype === "Binary" ? Buffer.from(v.buffer) : Buffer.from(v));
+
 /** _id → id, drop internals. */
 function toEntity<T>(doc: any): T {
   if (!doc) return doc;
   const { _id, lockVersion, ...rest } = doc;
+  for (const [k, v] of Object.entries(rest)) if (isBinary(v)) rest[k] = toBuffer(v);
   return { id: _id, ...rest } as T;
 }
 
+/** Bytes (a Uint8Array, e.g. a PNG) are written as a Buffer; the drivers stringify a bare Uint8Array. */
+const asBuffer = (v: unknown) => (v instanceof Uint8Array && !Buffer.isBuffer(v) ? Buffer.from(v.buffer, v.byteOffset, v.byteLength) : v);
+
 const clean = (o: Record<string, unknown>) => {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(o)) if (v !== undefined && k !== "id") out[k] = v;
+  for (const [k, v] of Object.entries(o)) if (v !== undefined && k !== "id") out[k] = asBuffer(v);
   return out;
 };
 
@@ -185,6 +193,13 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
         return docs.map((d) => toEntity(d));
       },
     };
+    const externalSignatories: ExternalSignatoryRepo = {
+      ...repo(models.ExternalSignatory, session),
+      async listForOrg(orgId, lab) {
+        const docs = await models.ExternalSignatory.find({ orgId, ...(lab ? { lab } : {}) }, null, s).sort({ name: 1, _id: 1 }).lean();
+        return docs.map((d) => toEntity<any>(d));
+      },
+    };
     const periodLocks: PeriodLockRepo = {
       ...repo(models.PeriodLock, session),
       async hold(orgId, scopes) {
@@ -286,6 +301,11 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
       bankLines: repo(models.BankLine, session),
       periodLocks,
       creditNotes,
+      externalReports: repo(models.ExternalReport, session),
+      externalReportFiles: repo(models.ExternalReportFile, session),
+      externalSignatories,
+      externalSignatures: repo(models.ExternalSignature, session),
+      reportProvenance: repo(models.ReportProvenance, session),
       posting: opts.posting,
       async transaction(fn) {
         if (session) return fn(self); // already inside one: join it

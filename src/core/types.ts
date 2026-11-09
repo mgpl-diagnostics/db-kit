@@ -626,3 +626,125 @@ export interface CreditNote extends Timestamps {
   status: "issued" | "cancelled";
   createdBy?: Id | null;
 }
+
+// ------------------------------------------------------------------ partner-lab imports
+// Reports from partner labs, read from their PDFs by @mgpl-diagnostics/report-reader in the api.
+// The PDF, the extracted JSON and the signature images are patient / personal data: tenant-scoped,
+// never logged. A partner signature may only be shown with results from its own PDF (sourceSha256).
+
+/** Partner labs report-reader supports. */
+export type ExternalLabId = "hypatho" | "clinova";
+
+export type ExternalReportStatus = "extracted" | "matched" | "applied" | "rejected";
+
+/** One uploaded partner-lab PDF. Its bytes live in `externalReportFiles` (same id), so lists stay light. */
+export interface ExternalReport extends Timestamps {
+  id: Id;
+  orgId: Id;
+  branchId: Id;
+  /** Set when matched to one of our bookings. */
+  bookingId?: Id | null;
+  lab: ExternalLabId;
+  labName: string;
+  processedAt?: string | null;
+  /** sha256 of the PDF. Unique per organisation: the same PDF uploaded twice is one row. */
+  sourceSha256: string;
+  fileName?: string | null;
+  /** Size of the stored PDF. */
+  byteLength: number;
+  /** report-reader's ExtractedReport, stored as is (no Dates inside: ISO strings). */
+  extracted: Record<string, unknown>;
+  status: ExternalReportStatus;
+  /** From the extractor and from booking matching. */
+  warnings: string[];
+  uploadedBy?: Id | null;
+  uploadedAt: Date;
+  appliedBy?: Id | null;
+  appliedAt?: Date | null;
+  rejectedBy?: Id | null;
+  rejectReason?: string | null;
+}
+
+/** The original PDF of an external report (id = the external report's id). Private. */
+export interface ExternalReportFile extends Timestamps {
+  id: Id;
+  orgId: Id;
+  sourceSha256: string;
+  byteLength: number;
+  pdf: Uint8Array;
+}
+
+export type ExternalSignatoryRole = "pathologist" | "biochemist" | "microbiologist" | "consultant" | "manager" | "unknown";
+
+/**
+ * The partner signature registry: one row per partner doctor or signer, named once by an authorised
+ * user. Loaded as report-reader `KnownSignature[]`. Data, never source code.
+ */
+export interface ExternalSignatory extends Timestamps {
+  id: Id;
+  orgId: Id;
+  lab: ExternalLabId;
+  name: string;
+  qualification?: string | null;
+  registration?: string | null;
+  title?: string | null;
+  role?: ExternalSignatoryRole | null;
+  /** Pixel hashes seen for this person. */
+  sha: string[];
+  /** Perceptual hashes. */
+  dhash: string[];
+  createdBy?: Id | null;
+  verifiedBy?: Id | null;
+}
+
+/** A signature image from one partner PDF. Unique per (organisation, sourceSha256, sha). */
+export interface ExternalSignature extends Timestamps {
+  id: Id;
+  orgId: Id;
+  externalReportId: Id;
+  /** The PDF it came from: it may only be shown with results from this PDF. */
+  sourceSha256: string;
+  sha: string;
+  dhash: string;
+  width: number;
+  height: number;
+  /** PNG bytes. Private. */
+  png: Uint8Array;
+}
+
+export interface ProvenanceSignatory {
+  /** report-reader signatory id (the signature's sha). */
+  signatoryId: string;
+  name: string | null;
+  qualification?: string;
+  registration?: string;
+  title?: string;
+  role: string;
+}
+
+/** Where the results of one of our reports came from, when imported from a partner PDF. One per report. */
+export interface ReportProvenance extends Timestamps {
+  id: Id;
+  orgId: Id;
+  /** Unique: one provenance per report. */
+  reportId: Id;
+  externalReportId: Id;
+  sourceSha256: string;
+  lab: ExternalLabId;
+  /** Position of the test in the external report's `extracted.tests`. */
+  testIndex: number;
+  performedBy: string;
+  performedAt?: string | null;
+  /** Medical signatories only. */
+  reportedBy: ProvenanceSignatory[];
+  /** Present only when the partner marked this test accredited. */
+  accreditation?: { body: "NABL"; certificate?: string; text: string } | null;
+  /** The partner's own test name, for audit. */
+  sourceTestName: string;
+  sourceSampleId?: string | null;
+  /** ISO local time (IST). */
+  sourceReportedAt?: string | null;
+  /** The results as imported, kept for audit when staff edit them later. */
+  importedResults: ResultValue[];
+  appliedBy?: Id | null;
+}
