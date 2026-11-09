@@ -1,5 +1,6 @@
 import type {
-  AccountGroup, AuditEntry, BankLine, BankStatement, Booking, Branch, CashClosing, CreditNote, Customer, Doctor, Id, Invoice, Ledger,
+  AccountGroup, AuditEntry, BankLine, BankStatement, Booking, Branch, CashClosing, CreditNote, Customer, Doctor, ExternalLabId, ExternalReport,
+  ExternalReportFile, ExternalSignatory, ExternalSignature, Id, Invoice, Ledger, ReportProvenance,
   LedgerEntry, New, Organization, Partner, PartnerAgreement, Patient, Payment, PeriodLock, Report, Role, Sample, Settlement, TaxRule, User,
   Voucher, VoucherType,
 } from "./types";
@@ -122,6 +123,12 @@ export interface CreditNoteRepo extends Repo<CreditNote> {
   listByDate(query: DateQuery & { includeCancelled?: boolean }): Promise<CreditNote[]>;
 }
 
+/** The partner signature registry. */
+export interface ExternalSignatoryRepo extends Repo<ExternalSignatory> {
+  /** Every signatory of the organisation (one lab, or all), by name. Cached per organisation when Redis is configured. */
+  listForOrg(orgId: Id, lab?: ExternalLabId): Promise<ExternalSignatory[]>;
+}
+
 export type HoldMode = "share" | "update";
 
 export interface PeriodLockRepo extends Repo<PeriodLock> {
@@ -177,6 +184,13 @@ export interface Repositories {
   bankLines: Repo<BankLine>;
   periodLocks: PeriodLockRepo;
   creditNotes: CreditNoteRepo;
+  // partner-lab imports (report-reader, in the api)
+  externalReports: Repo<ExternalReport>;
+  /** The original PDFs, apart so that lists of external reports never load them. */
+  externalReportFiles: Repo<ExternalReportFile>;
+  externalSignatories: ExternalSignatoryRepo;
+  externalSignatures: Repo<ExternalSignature>;
+  reportProvenance: Repo<ReportProvenance>;
   /** Posting for invoices and payments; the default (this package's accounting) when unset. */
   readonly posting?: PostingHook;
   /**

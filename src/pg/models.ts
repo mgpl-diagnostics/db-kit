@@ -6,7 +6,7 @@ import { DataTypes, type ModelAttributes, type ModelStatic, type Model, type Seq
  * (≤ ₹2.1 crore per row; BIGINT would come back as strings).
  */
 
-const { UUID, UUIDV4, STRING, TEXT, BOOLEAN, INTEGER, DATE, JSONB, ARRAY } = DataTypes;
+const { UUID, UUIDV4, STRING, TEXT, BOOLEAN, INTEGER, DATE, JSONB, ARRAY, BLOB } = DataTypes;
 
 // Factories, not shared objects: Sequelize mutates each attribute definition it receives (it sets the
 // column name on it), so one object reused for several columns makes them all write to one column.
@@ -292,6 +292,58 @@ export const definitions: Record<string, Def> = {
       voucherId: { ...ref("vouchers", true), defaultValue: null }, status: { ...oneOf("issued", "cancelled"), defaultValue: "issued" }, createdBy: nullable(UUID),
     },
     indexes: [{ fields: ["org_id", "note_no"], unique: true }, { fields: ["invoice_id"] }, { fields: ["org_id", "date"] }],
+  },
+  // ---- partner-lab imports (report-reader in the api); PDFs, JSON and signatures are private
+  ExternalReport: {
+    table: "external_reports",
+    attributes: {
+      id: id(), orgId: ref("organizations"), branchId: ref("branches"), bookingId: { ...ref("bookings", true), defaultValue: null },
+      lab: oneOf("hypatho", "clinova"), labName: { type: STRING, allowNull: false }, processedAt: nullable(STRING),
+      sourceSha256: { type: STRING(64), allowNull: false }, fileName: nullable(STRING), byteLength: { type: INTEGER, allowNull: false, defaultValue: 0 },
+      extracted: { type: JSONB, allowNull: false, defaultValue: {} },
+      status: { ...oneOf("extracted", "matched", "applied", "rejected"), defaultValue: "extracted" },
+      warnings: { type: JSONB, allowNull: false, defaultValue: [] }, uploadedBy: nullable(UUID), uploadedAt: { type: DATE, allowNull: false, defaultValue: DataTypes.NOW },
+      appliedBy: nullable(UUID), appliedAt: nullable(DATE), rejectedBy: nullable(UUID), rejectReason: nullable(TEXT),
+    },
+    indexes: [{ fields: ["org_id", "source_sha256"], unique: true }, { fields: ["org_id", "status"] }, { fields: ["booking_id"] }, { fields: ["branch_id", "uploaded_at"] }],
+  },
+  ExternalReportFile: {
+    table: "external_report_files",
+    attributes: {
+      id: { ...ref("external_reports"), primaryKey: true, onDelete: "CASCADE" }, orgId: ref("organizations"),
+      sourceSha256: { type: STRING(64), allowNull: false }, byteLength: { type: INTEGER, allowNull: false }, pdf: { type: BLOB, allowNull: false },
+    },
+    indexes: [{ fields: ["org_id", "source_sha256"], unique: true }],
+  },
+  ExternalSignatory: {
+    table: "external_signatories",
+    attributes: {
+      id: id(), orgId: ref("organizations"), lab: oneOf("hypatho", "clinova"), name: { type: STRING, allowNull: false },
+      qualification: nullable(STRING), registration: nullable(STRING), title: nullable(STRING), role: nullable(STRING(32)),
+      sha: { type: ARRAY(TEXT), allowNull: false, defaultValue: [] }, dhash: { type: ARRAY(TEXT), allowNull: false, defaultValue: [] },
+      createdBy: nullable(UUID), verifiedBy: nullable(UUID),
+    },
+    indexes: [{ fields: ["org_id", "lab"] }],
+  },
+  ExternalSignature: {
+    table: "external_signatures",
+    attributes: {
+      id: id(), orgId: ref("organizations"), externalReportId: { ...ref("external_reports"), onDelete: "CASCADE" },
+      sourceSha256: { type: STRING(64), allowNull: false }, sha: { type: STRING(64), allowNull: false }, dhash: { type: STRING(32), allowNull: false, defaultValue: "" },
+      width: { type: INTEGER, allowNull: false }, height: { type: INTEGER, allowNull: false }, png: { type: BLOB, allowNull: false },
+    },
+    indexes: [{ fields: ["org_id", "source_sha256", "sha"], unique: true }, { fields: ["external_report_id"] }, { fields: ["org_id", "sha"] }],
+  },
+  ReportProvenance: {
+    table: "report_provenance",
+    attributes: {
+      id: id(), orgId: ref("organizations"), reportId: ref("reports"), externalReportId: ref("external_reports"),
+      sourceSha256: { type: STRING(64), allowNull: false }, lab: oneOf("hypatho", "clinova"), testIndex: { type: INTEGER, allowNull: false },
+      performedBy: { type: STRING, allowNull: false }, performedAt: nullable(STRING), reportedBy: { type: JSONB, allowNull: false, defaultValue: [] },
+      accreditation: nullable(JSONB), sourceTestName: { type: STRING, allowNull: false }, sourceSampleId: nullable(STRING(64)), sourceReportedAt: nullable(STRING(32)),
+      importedResults: { type: JSONB, allowNull: false, defaultValue: [] }, appliedBy: nullable(UUID),
+    },
+    indexes: [{ fields: ["report_id"], unique: true }, { fields: ["external_report_id"] }],
   },
 };
 

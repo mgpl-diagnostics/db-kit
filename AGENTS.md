@@ -37,6 +37,9 @@ scripts/test.ts one contract suite on real MongoDB + real PostgreSQL (in-process
    `createDb({ posting })`; finance-kit supplies one. Finance storage is described in
    [docs/FINANCE-STORAGE.md](docs/FINANCE-STORAGE.md); finance rules live in finance-kit, not here.
 10. No dates inside JSON arrays (JSONB returns strings): use IST day strings like `"2026-10-14"`.
+11. **Partner-lab imports** (`externalReports`, `externalReportFiles`, `externalSignatories`, `externalSignatures`,
+    `reportProvenance`) hold patient and personal data (PDFs, extracted JSON, signature PNGs). Never log
+    them or put real ones in tests. See [docs/EXTERNAL-REPORTS.md](docs/EXTERNAL-REPORTS.md).
 
 ## Commands
 

@@ -1,6 +1,6 @@
 import { Op, QueryTypes, Sequelize, Transaction, type Model, type ModelStatic, type Options } from "sequelize";
 import type {
-  AuditRepo, CounterRepo, CreditNoteRepo, DateQuery, EntryQuery, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, LockableRepo,
+  AuditRepo, CounterRepo, CreditNoteRepo, DateQuery, EntryQuery, ExternalSignatoryRepo, Filter, InvoiceRepo, LedgerEntryRepo, LedgerRepo, ListOptions, LockableRepo,
   PatientRepo, PeriodLockRepo, PostingHook, Repo, Repositories, UserRepo, VoucherRepo,
 } from "../core/ports";
 import type { Id } from "../core/types";
@@ -32,9 +32,12 @@ function dateWhere(from?: Date, to?: Date, field = "date") {
 
 const scoped = (q: DateQuery) => ({ orgId: q.orgId, ...(q.branchId ? { branchId: q.branchId } : {}) });
 
+/** Bytes (a Uint8Array, e.g. a PNG) are written as a Buffer; the drivers stringify a bare Uint8Array. */
+const asBuffer = (v: unknown) => (v instanceof Uint8Array && !Buffer.isBuffer(v) ? Buffer.from(v.buffer, v.byteOffset, v.byteLength) : v);
+
 const clean = (o: Record<string, unknown>) => {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(o)) if (v !== undefined) out[k] = v;
+  for (const [k, v] of Object.entries(o)) if (v !== undefined) out[k] = asBuffer(v);
   return out;
 };
 
@@ -179,6 +182,13 @@ export async function createPgRepositories(opts: PgOptions): Promise<Repositorie
         return rows.map((r) => toEntity<any>(r, "PeriodLock"));
       },
     };
+    const externalSignatories: ExternalSignatoryRepo = {
+      ...repo(m.ExternalSignatory!, transaction),
+      async listForOrg(orgId, lab) {
+        const rows = await m.ExternalSignatory!.findAll({ where: { orgId, ...(lab ? { lab } : {}) }, order: [["name", "ASC"], ["id", "ASC"]], ...t });
+        return rows.map((r) => toEntity<any>(r, "ExternalSignatory"));
+      },
+    };
     const ledgers: LedgerRepo = {
       ...repo(m.Ledger!, transaction),
       findBySystemKey: async (orgId, key) => toEntity(await m.Ledger!.findOne({ where: { orgId, systemKey: key }, ...t }), "Ledger"),
@@ -275,6 +285,11 @@ export async function createPgRepositories(opts: PgOptions): Promise<Repositorie
       bankLines: repo(m.BankLine!, transaction),
       periodLocks,
       creditNotes,
+      externalReports: repo(m.ExternalReport!, transaction),
+      externalReportFiles: repo(m.ExternalReportFile!, transaction),
+      externalSignatories,
+      externalSignatures: repo(m.ExternalSignature!, transaction),
+      reportProvenance: repo(m.ReportProvenance!, transaction),
       posting: opts.posting,
       async transaction(fn) {
         if (transaction) return fn(self); // already inside one: join it

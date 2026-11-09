@@ -158,7 +158,65 @@ async function contract(db: Db) {
   ok((await r.ledgerEntries.list({ orgId: org.id, invoiceId: unpaid.id })).length === 0 && (await trialBalance(r, { orgId: org.id })).differencePaise === 0, `${tag} its postings are removed; books balance`);
   ok((await r.audit.find({ orgId: org.id })).length > 10, `${tag} audit log written`);
   await rejects(recordPayment(r, { invoiceId: "00000000-0000-4000-8000-000000000000", amountPaise: 100, mode: "cash" }), NotFoundError, `${tag} unknown invoice → NotFoundError`);
+  await externalImports(db, org, branch, booking.id, report.id, owner.id);
   return { org, branch };
+}
+
+// ------------------------------------------------------------------ partner-lab imports (both backends)
+
+/** Storage for report-reader imports in the api: external reports, their PDFs, signatures, the registry, provenance. Fictional data. */
+async function externalImports(db: Db, org: Organization, branch: Branch, bookingId: string, reportId: string, userId: string) {
+  const r = db.rawRepos;
+  const tag = `[${db.backend}]`;
+  console.log(`${tag} partner-lab imports`);
+  const sha = "a".repeat(64);
+  const extracted = { source: { sha256: sha, lab: "clinova", labName: "Clinova Pathlabs", pages: 2 }, patient: { name: "Kavita Sharma" }, dates: {}, tests: [{ name: "LIPID PROFILE", parameters: [], pages: [1], signedBy: ["s1"], accredited: true }], signatories: [], accreditation: [], warnings: [] };
+  const ext = await r.externalReports.create({
+    orgId: org.id, branchId: branch.id, lab: "clinova", labName: "Clinova Pathlabs", sourceSha256: sha, fileName: "fictional.pdf", byteLength: 4,
+    extracted, status: "extracted", warnings: ["unnamed signature"], uploadedBy: userId, uploadedAt: new Date(),
+  });
+  const back = await r.externalReports.get(ext.id);
+  ok(back?.status === "extracted" && (back.extracted as any).dates && Object.keys((back.extracted as any).dates).length === 0 && (back.extracted as any).tests[0].accredited === true && back.warnings[0] === "unnamed signature" && back.bookingId == null,
+    `${tag} external report: extracted JSON stored as is (empty objects kept), warnings, no booking yet`);
+  await rejects(r.externalReports.create({ ...ext, id: undefined } as any), Error, `${tag} same PDF (sourceSha256) twice in one organisation → unique index`);
+
+  const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+  await r.externalReportFiles.create({ id: ext.id, orgId: org.id, sourceSha256: sha, byteLength: pdf.byteLength, pdf });
+  const file = await r.externalReportFiles.get(ext.id);
+  ok(file && Buffer.isBuffer(file.pdf) && Buffer.from(file.pdf).toString() === "%PDF", `${tag} the PDF bytes come back as a Buffer, stored apart from the row`);
+  ok(!("pdf" in (await r.externalReports.find({ orgId: org.id } as any))[0]!), `${tag} listing external reports never loads PDF bytes`);
+
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  await r.externalSignatures.create({ orgId: org.id, externalReportId: ext.id, sourceSha256: sha, sha: "0123456789abcdef", dhash: "ffff0000ffff0000", width: 120, height: 40, png });
+  const sig = await r.externalSignatures.findOne({ orgId: org.id, sourceSha256: sha, sha: "0123456789abcdef" } as any);
+  ok(sig && Buffer.isBuffer(sig.png) && sig.png.byteLength === 7 && sig.width === 120, `${tag} signature PNG tied to its PDF (sourceSha256)`);
+  ok((await r.externalSignatures.find({ orgId: org.id, sha: "0123456789abcdef" } as any)).length === 1 && !(await r.externalSignatures.findOne({ orgId: org.id, sourceSha256: "b".repeat(64), sha: "0123456789abcdef" } as any)),
+    `${tag} …and found only under its own PDF`);
+  await rejects(r.externalSignatures.create({ orgId: org.id, externalReportId: ext.id, sourceSha256: sha, sha: "0123456789abcdef", dhash: "", width: 1, height: 1, png }), Error, `${tag} one image per (PDF, signature) → unique index`);
+
+  const s1 = await r.externalSignatories.create({ orgId: org.id, lab: "hypatho", name: "Dr Fictional One", qualification: "MD (Pathology)", role: "pathologist", sha: ["0123456789abcdef"], dhash: ["ffff0000ffff0000"], createdBy: userId });
+  await r.externalSignatories.create({ orgId: org.id, lab: "clinova", name: "Dr Another Person", sha: [], dhash: [] });
+  ok((await r.externalSignatories.listForOrg(org.id)).map((x) => x.name).join() === "Dr Another Person,Dr Fictional One" && (await r.externalSignatories.listForOrg(org.id, "hypatho"))[0]?.sha[0] === "0123456789abcdef",
+    `${tag} signature registry: listForOrg by name, per lab, hashes as arrays`);
+  await r.externalSignatories.update(s1.id, { sha: ["0123456789abcdef", "fedcba9876543210"], verifiedBy: userId });
+  ok((await r.externalSignatories.get(s1.id))?.sha.length === 2, `${tag} registry: a new pixel hash added to a signatory`);
+
+  const prov = await r.reportProvenance.create({
+    orgId: org.id, reportId, externalReportId: ext.id, sourceSha256: sha, lab: "clinova", testIndex: 0, performedBy: "Clinova Pathlabs",
+    reportedBy: [{ signatoryId: "s1", name: "Dr Fictional One", qualification: "MD", role: "pathologist" }],
+    accreditation: { body: "NABL", certificate: "MC-0000", text: "Performed at a NABL accredited laboratory (Certificate No. MC-0000)" },
+    sourceTestName: "LIPID PROFILE", sourceReportedAt: "2026-10-14T10:30", importedResults: [{ parameter: "Cholesterol", value: "180", unit: "mg/dL", flag: "" }], appliedBy: userId,
+  });
+  const pb = await r.reportProvenance.findOne({ reportId } as any);
+  ok(pb?.id === prov.id && pb.reportedBy[0]?.name === "Dr Fictional One" && pb.accreditation?.certificate === "MC-0000" && pb.importedResults[0]?.value === "180", `${tag} report provenance: performed by, reported by, NABL, results as imported`);
+  await rejects(r.reportProvenance.create({ ...prov, id: undefined } as any), Error, `${tag} one provenance per report → unique index`);
+  await r.externalReports.update(ext.id, { status: "applied", bookingId, appliedBy: userId, appliedAt: new Date() });
+  ok((await r.externalReports.get(ext.id))?.status === "applied", `${tag} external report applied to a booking`);
+
+  // tenant scope: another organisation may upload the same PDF
+  const other = await seedOrganization(r, { org: { name: "Other", code: `X${db.backend.toUpperCase()}` }, branch: { code: "X1", name: "X" }, owner: { name: "o", email: "o@x.in", passwordHash: "h" } });
+  const ext2 = await r.externalReports.create({ ...ext, id: undefined, orgId: other.org.id, branchId: other.branch.id, status: "extracted", bookingId: null } as any);
+  ok(ext2.id !== ext.id && (await r.externalSignatories.listForOrg(other.org.id)).length === 0, `${tag} sourceSha256 is unique per organisation; registries are per organisation`);
 }
 
 // ------------------------------------------------------------------ finance storage (both backends)
@@ -397,19 +455,26 @@ async function cacheSuite() {
 
 async function main() {
   const t0 = Date.now();
-  // MongoDB: a one-node replica set, so transactions are real
-  const rs = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } });
-  const mongo = await createDb({ backend: "mongo", mongo: { uri: rs.getUri("mgpl_test") } });
-  const m = await contract(mongo);
-  await financeStorage(mongo, m.org, m.branch, (posting) => createMongoRepositories({ uri: rs.getUri("mgpl_test"), posting }));
+  // TEST_BACKENDS=pg runs PostgreSQL only (where MongoDB binaries cannot be downloaded); CI runs both
+  const backends = (process.env.TEST_BACKENDS ?? "mongo,pg").split(",").map((x) => x.trim());
+  let mongo: Db | undefined;
+  let rs: MongoMemoryReplSet | undefined;
+  if (backends.includes("mongo")) {
+    // MongoDB: a one-node replica set, so transactions are real
+    rs = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } });
+    const uri = rs.getUri("mgpl_test");
+    mongo = await createDb({ backend: "mongo", mongo: { uri } });
+    const m = await contract(mongo);
+    await financeStorage(mongo, m.org, m.branch, (posting) => createMongoRepositories({ uri, posting }));
 
-  // a standalone server refuses multi-document work instead of silently losing atomicity
-  const standalone = await MongoMemoryServer.create();
-  const sa = await createMongoRepositories({ uri: standalone.getUri("sa") });
-  await rejects(sa.transaction(async () => 1), TransactionsUnsupportedError, "[mongo] standalone server: transaction() refuses (ACID)");
-  ok((await (await createMongoRepositories({ uri: standalone.getUri("sa2"), allowNoTransactions: true })).transaction(async () => 7)) === 7, "[mongo] allowNoTransactions opt-in for dev");
-  await sa.close();
-  await standalone.stop();
+    // a standalone server refuses multi-document work instead of silently losing atomicity
+    const standalone = await MongoMemoryServer.create();
+    const sa = await createMongoRepositories({ uri: standalone.getUri("sa") });
+    await rejects(sa.transaction(async () => 1), TransactionsUnsupportedError, "[mongo] standalone server: transaction() refuses (ACID)");
+    ok((await (await createMongoRepositories({ uri: standalone.getUri("sa2"), allowNoTransactions: true })).transaction(async () => 7)) === 7, "[mongo] allowNoTransactions opt-in for dev");
+    await sa.close();
+    await standalone.stop();
+  }
 
   // PostgreSQL: a real server in a temp folder
   rmSync(".pg-test", { recursive: true, force: true });
@@ -425,11 +490,23 @@ async function main() {
   const { redis, cache } = await cacheSuite();
 
   console.log("\n[adapters]");
-  const cached = withCache(mongo.rawRepos, cache, 60);
-  const anyOrg = (await mongo.rawRepos.orgs.find())[0]!;
+  const base = (mongo ?? pgdb).rawRepos;
+  const cached = withCache(base, cache, 60);
+  const anyOrg = (await base.orgs.find())[0]!;
   await cached.orgs.get(anyOrg.id);
   await cached.orgs.update(anyOrg.id, { name: "Renamed Lab" });
   ok((await cached.orgs.get(anyOrg.id))?.name === "Renamed Lab", "cached repositories: update invalidates the cached read");
+  let sigLoads = 0;
+  const countingSigs = { ...base.externalSignatories, listForOrg: (o: string, l?: any) => { sigLoads++; return base.externalSignatories.listForOrg(o, l); } };
+  const cachedSigs = withCache({ ...base, externalSignatories: countingSigs }, cache, 60).externalSignatories;
+  const before = (await cachedSigs.listForOrg(anyOrg.id)).length;
+  await cachedSigs.listForOrg(anyOrg.id);
+  const added = await cachedSigs.create({ orgId: anyOrg.id, lab: "hypatho", name: "Dr Cache Test", sha: ["c0ffee"], dhash: [] });
+  const after = await cachedSigs.listForOrg(anyOrg.id);
+  const loadsAfterCreate = sigLoads;
+  await cachedSigs.delete(added.id);
+  const final = await cachedSigs.listForOrg(anyOrg.id);
+  ok(loadsAfterCreate === 2 && after.length === before + 1 && final.length === before && sigLoads === 3, "cached signature registry: per-org list cached, cleared on create and delete");
 
   const app = Fastify();
   await app.register(mgplDb, { db: { ...pgdb, repos: pgdb.rawRepos } });
@@ -440,7 +517,7 @@ async function main() {
     return inv;
   });
   const res = await app.inject({ url: "/orgs" });
-  ok(res.statusCode === 200 && res.json()[0].code === "MGPL", "fastify: plugin decorates app.db, routes use repositories");
+  ok(res.statusCode === 200 && res.json().some((o: any) => o.code === "MGPL"), "fastify: plugin decorates app.db, routes use repositories");
   const nf = await app.inject({ url: "/invoice/00000000-0000-4000-8000-000000000000" });
   ok(nf.statusCode === 404, "fastify: NotFoundError → 404");
   await app.close();
@@ -453,8 +530,8 @@ async function main() {
   dbErrorHandler()(new ConflictError("x"), {}, { status: (s: number) => ({ json: (b: unknown) => Object.assign(sent, { s, b }) }) }, () => {});
   ok(seen === pgdb && sent.s === 409, "express: attachDb + dbErrorHandler (409)");
 
-  await mongo.close();
-  await rs.stop();
+  await mongo?.close();
+  await rs?.stop();
   await pgdb.close();
   await pg.stop();
   rmSync(".pg-test", { recursive: true, force: true });

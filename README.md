@@ -55,6 +55,7 @@ Tables and collections, with their indexes, are created on start (`sync: false` 
 | Billing | invoices (GST, discounts, round-off, B2B customer, place of supply), payments and refunds, credit notes |
 | Books | account groups, ledgers, vouchers, ledger entries, lock dates |
 | Finance | B2B customers, collection-centre partners and agreements, monthly settlements, day-end cash closings, bank statements and lines, GST tax rules. Rules live in [finance-kit](https://github.com/mgpl-diagnostics/finance-kit); see [docs/FINANCE-STORAGE.md](docs/FINANCE-STORAGE.md) |
+| Partner-lab imports | external reports (partner PDFs read by report-reader), their files, the partner signature registry, signature images per PDF, report provenance. See [docs/EXTERNAL-REPORTS.md](docs/EXTERNAL-REPORTS.md) |
 
 Ids are **UUID strings on both databases**, so data and code move between them unchanged. Money is
 **integer paise** everywhere.
@@ -144,12 +145,13 @@ Peer dependencies are all optional: install only the ones you use (`mongoose`, o
 ## Tests
 
 ```bash
-npm test   # 194 checks
+npm test   # 221 checks; TEST_BACKENDS=pg npm test runs PostgreSQL only
 ```
 
 The suite starts a real MongoDB (single-node replica set) and a real PostgreSQL in-process, then runs
 the same contract suite on both. It covers seeding, numbering, workflows, ACID, the books, the finance
-storage (unique keys, row locks, lock dates under concurrency, the posting hook), the cache techniques
+storage (unique keys, row locks, lock dates under concurrency, the posting hook), the partner-lab import
+storage (bytes, unique PDF per organisation, signatures per PDF, provenance), the cache techniques
 and the adapters. Set `REDIS_URL` to run the cache checks against real Redis instead of
 `ioredis-mock`.
 
