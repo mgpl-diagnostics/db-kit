@@ -751,3 +751,29 @@ export interface ReportProvenance extends Timestamps {
   importedResults: ResultValue[];
   appliedBy?: Id | null;
 }
+
+// ------------------------------------------------------------------ patient links (the QR on reports and bills)
+
+/**
+ * A read-only link a patient opens from the QR on their report or bill: that one booking's bill and released
+ * reports, nothing else. The token itself is never stored: only `tokenHash` (SHA-256 hex) to look it up, and
+ * `nonce`, from which the server derives the token again with its own secret (HMAC) when it reprints a
+ * document. Unique per token hash; it expires and can be revoked.
+ */
+export interface PatientLink extends Timestamps {
+  id: Id;
+  orgId: Id;
+  branchId: Id;
+  bookingId: Id;
+  patientId: Id;
+  /** SHA-256 hex of the token. */
+  tokenHash: string;
+  /** Random, base64url; the token is HMAC(server secret, nonce). Useless without the secret. */
+  nonce: string;
+  expiresAt: Date;
+  revokedAt?: Date | null;
+  revokedBy?: Id | null;
+  createdBy?: Id | null;
+  lastViewedAt?: Date | null;
+  viewCount: number;
+}

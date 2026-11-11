@@ -223,6 +223,17 @@ async function externalImports(db: Db, org: Organization, branch: Branch, bookin
   const other = await seedOrganization(r, { org: { name: "Other", code: `X${db.backend.toUpperCase()}` }, branch: { code: "X1", name: "X" }, owner: { name: "o", email: "o@x.in", passwordHash: "h" } });
   const ext2 = await r.externalReports.create({ ...ext, id: undefined, orgId: other.org.id, branchId: other.branch.id, status: "extracted", bookingId: null } as any);
   ok(ext2.id !== ext.id && (await r.externalSignatories.listForOrg(other.org.id)).length === 0, `${tag} sourceSha256 is unique per organisation; registries are per organisation`);
+
+  // patient links (the QR on reports and bills): token hashes only, unique, expiry and revocation kept
+  const patientId = (await r.bookings.get(bookingId))!.patientId;
+  const expiresAt = new Date(Date.now() + 90 * 86_400_000);
+  const link = await r.patientLinks.create({ orgId: org.id, branchId: branch.id, bookingId, patientId, tokenHash: "d".repeat(64), nonce: "fictional-nonce-1", expiresAt, createdBy: userId, viewCount: 0 });
+  const lb = await r.patientLinks.findOne({ tokenHash: "d".repeat(64) } as any);
+  ok(lb?.id === link.id && lb.bookingId === bookingId && lb.expiresAt.getTime() === expiresAt.getTime() && lb.revokedAt == null && lb.viewCount === 0, `${tag} patient link: found by token hash, expiry kept, not revoked`);
+  await rejects(r.patientLinks.create({ ...link, id: undefined } as any), Error, `${tag} one link per token hash → unique index`);
+  await r.patientLinks.update(link.id, { revokedAt: new Date(), revokedBy: userId, viewCount: 3, lastViewedAt: new Date() });
+  const lr = await r.patientLinks.get(link.id);
+  ok(lr?.revokedAt instanceof Date && lr.viewCount === 3 && (await r.patientLinks.find({ orgId: org.id, bookingId } as any)).length === 1, `${tag} patient link: revoked, views counted, listed per booking`);
 }
 
 // ------------------------------------------------------------------ finance storage (both backends)

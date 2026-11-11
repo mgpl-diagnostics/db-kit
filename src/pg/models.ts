@@ -346,6 +346,16 @@ export const definitions: Record<string, Def> = {
     },
     indexes: [{ fields: ["report_id"], unique: true }, { fields: ["external_report_id"] }],
   },
+  PatientLink: {
+    table: "patient_links",
+    attributes: {
+      id: id(), orgId: ref("organizations"), branchId: ref("branches"), bookingId: ref("bookings"), patientId: ref("patients"),
+      tokenHash: { type: STRING(64), allowNull: false }, nonce: { type: STRING(64), allowNull: false }, expiresAt: { type: DATE, allowNull: false },
+      revokedAt: nullable(DATE), revokedBy: nullable(UUID), createdBy: nullable(UUID), lastViewedAt: nullable(DATE),
+      viewCount: { type: INTEGER, allowNull: false, defaultValue: 0 },
+    },
+    indexes: [{ fields: ["token_hash"], unique: true }, { fields: ["org_id", "booking_id"] }],
+  },
 };
 
 export type PgModelName = keyof typeof definitions;

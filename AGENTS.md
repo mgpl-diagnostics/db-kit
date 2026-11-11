@@ -40,6 +40,8 @@ scripts/test.ts one contract suite on real MongoDB + real PostgreSQL (in-process
 11. **Partner-lab imports** (`externalReports`, `externalReportFiles`, `externalSignatories`, `externalSignatures`,
     `reportProvenance`) hold patient and personal data (PDFs, extracted JSON, signature PNGs). Never log
     them or put real ones in tests. See [docs/EXTERNAL-REPORTS.md](docs/EXTERNAL-REPORTS.md).
+12. **Patient links** (`patientLinks`) store `tokenHash` and a `nonce`, never the token. Look them up by hash only and
+    never log tokens or nonces. See [docs/PATIENT-LINKS.md](docs/PATIENT-LINKS.md).
 
 ## Commands
 
