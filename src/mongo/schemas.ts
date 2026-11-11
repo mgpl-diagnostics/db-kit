@@ -327,6 +327,16 @@ export const schemas = {
     },
     { ...opts, minimize: false },
   ).index({ reportId: 1 }, { unique: true }).index({ externalReportId: 1 }),
+
+  PatientLink: new Schema(
+    {
+      _id: uuid, orgId: { type: String, required: true }, branchId: { type: String, required: true }, bookingId: { type: String, required: true },
+      patientId: { type: String, required: true }, tokenHash: { type: String, required: true }, nonce: { type: String, required: true },
+      expiresAt: { type: Date, required: true }, revokedAt: { type: Date, default: null }, revokedBy: { type: String, default: null },
+      createdBy: { type: String, default: null }, lastViewedAt: { type: Date, default: null }, viewCount: { type: Number, default: 0 },
+    },
+    opts,
+  ).index({ tokenHash: 1 }, { unique: true }).index({ orgId: 1, bookingId: 1 }),
 };
 
 export type ModelName = keyof typeof schemas;

@@ -289,6 +289,7 @@ export async function createPgRepositories(opts: PgOptions): Promise<Repositorie
       externalReportFiles: repo(m.ExternalReportFile!, transaction),
       externalSignatories,
       externalSignatures: repo(m.ExternalSignature!, transaction),
+      patientLinks: repo(m.PatientLink!, transaction),
       reportProvenance: repo(m.ReportProvenance!, transaction),
       posting: opts.posting,
       async transaction(fn) {

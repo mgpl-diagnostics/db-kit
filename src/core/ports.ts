@@ -1,6 +1,6 @@
 import type {
   AccountGroup, AuditEntry, BankLine, BankStatement, Booking, Branch, CashClosing, CreditNote, Customer, Doctor, ExternalLabId, ExternalReport,
-  ExternalReportFile, ExternalSignatory, ExternalSignature, Id, Invoice, Ledger, ReportProvenance,
+  ExternalReportFile, ExternalSignatory, ExternalSignature, Id, Invoice, Ledger, PatientLink, ReportProvenance,
   LedgerEntry, New, Organization, Partner, PartnerAgreement, Patient, Payment, PeriodLock, Report, Role, Sample, Settlement, TaxRule, User,
   Voucher, VoucherType,
 } from "./types";
@@ -191,6 +191,8 @@ export interface Repositories {
   externalSignatories: ExternalSignatoryRepo;
   externalSignatures: Repo<ExternalSignature>;
   reportProvenance: Repo<ReportProvenance>;
+  /** Patient links behind the QR on reports and bills (token hashes only). */
+  patientLinks: Repo<PatientLink>;
   /** Posting for invoices and payments; the default (this package's accounting) when unset. */
   readonly posting?: PostingHook;
   /**

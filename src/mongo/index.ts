@@ -305,6 +305,7 @@ export async function createMongoRepositories(opts: MongoOptions): Promise<Repos
       externalReportFiles: repo(models.ExternalReportFile, session),
       externalSignatories,
       externalSignatures: repo(models.ExternalSignature, session),
+      patientLinks: repo(models.PatientLink, session),
       reportProvenance: repo(models.ReportProvenance, session),
       posting: opts.posting,
       async transaction(fn) {
